@@ -145,6 +145,9 @@ const App: React.FC = () => {
   };
 
   const denyIncomingConnection = () => {
+    if (!incomingRequest) return;
+    console.log('[App] 拒绝连接请求:', incomingRequest);
+    backend.rejectConnection(incomingRequest.id);
     setIncomingRequest(null);
   };
 

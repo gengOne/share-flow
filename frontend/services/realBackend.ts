@@ -270,6 +270,14 @@ class RealBackendService {
     });
   }
 
+  rejectConnection(targetDeviceId: string) {
+    console.log(`[RealBackend] Rejecting connection from ${targetDeviceId}`);
+    this.send({ 
+      type: 'rejectConnection', 
+      target_device_id: targetDeviceId  // Use snake_case for Rust backend
+    });
+  }
+
   disconnect() {
     console.log('[RealBackend] Disconnecting...');
     this.send({ type: 'disconnect' });

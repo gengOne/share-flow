@@ -16,6 +16,7 @@ pub enum WsMessage {
     RequestConnection { target_device_id: String },
     CancelConnection,
     AcceptConnection { target_device_id: String },
+    RejectConnection { target_device_id: String },
     Disconnect,
     SendInput { event: InputEvent },
     GetLocalInfo,
