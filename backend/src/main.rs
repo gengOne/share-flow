@@ -105,15 +105,20 @@ async fn main() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<(Message, SocketAddr)>(32);
 
     // Start Discovery Listener
+    println!("\n>>> 启动 Discovery 监听器...");
     Discovery::listen(udp_port, tx.clone()).await?;
 
     // Start Discovery Broadcaster
+    println!("\n>>> 创建 Discovery 广播器...");
     let discovery = Discovery::new(udp_port).await?;
-    discovery.start_broadcast(Message::Discovery {
+    
+    let broadcast_msg = Message::Discovery {
         id: device_id.to_string(),
         name: device_name.to_string(),
         port: udp_port,
-    });
+    };
+    println!("\n>>> 启动广播，消息内容: {:?}", broadcast_msg);
+    discovery.start_broadcast(broadcast_msg);
 
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
@@ -164,14 +169,21 @@ async fn main() -> Result<()> {
         tokio::select! {
             // Handle UDP Discovery Events
             Some((msg, addr)) = rx.recv() => {
+                println!("\n>>> 主循环收到 UDP 消息来自 {}", addr);
                 match msg {
                     Message::Discovery { id, name, port: peer_port } => {
+                        println!("  消息类型: Discovery");
+                        println!("  设备 ID: {}", id);
+                        println!("  设备名称: {}", name);
+                        println!("  端口: {}", peer_port);
+                        
                         // Skip our own broadcasts
                         if id == device_id {
+                            println!("  -> 跳过 (这是本机的广播)");
                             continue;
                         }
                         
-                        println!("Discovered Peer: {} ({}) at {}:{}", name, id, addr.ip(), peer_port);
+                        println!("  ✓ 发现新设备: {} ({}) at {}:{}", name, id, addr.ip(), peer_port);
                         
                         let device = DeviceInfo {
                             id: id.clone(),
@@ -182,11 +194,13 @@ async fn main() -> Result<()> {
                         
                         // Store device
                         discovered_devices.lock().await.insert(id.clone(), device.clone());
+                        println!("  -> 已保存到设备列表");
                         
                         // Notify frontend
                         ws_server.broadcast(WsMessage::DeviceFound { device });
+                        println!("  -> 已通知前端");
                     }
-                    _ => println!("Received UDP from {}: {:?}", addr, msg),
+                    _ => println!("  其他消息类型: {:?}", msg),
                 }
             }
             
