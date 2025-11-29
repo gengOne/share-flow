@@ -1,6 +1,4 @@
 use rdev::{simulate, Button, EventType, Key};
-use std::thread;
-use std::time::Duration;
 
 pub struct InputSimulator;
 
@@ -69,8 +67,7 @@ impl InputSimulator {
     }
 
     pub fn key_press(&self, key_code: u32, is_down: bool) {
-        // 将虚拟键码转换为 rdev Key
-        // 这是一个简化的映射，实际需要完整的键码映射表
+        // 将字符码转换为 rdev Key
         let key = self.map_key_code(key_code);
         
         if let Some(rdev_key) = key {
@@ -80,20 +77,25 @@ impl InputSimulator {
                 EventType::KeyRelease(rdev_key)
             };
 
-            println!("[InputSimulator] 按键: code={}, down={}", key_code, is_down);
+            println!("[InputSimulator] 按键: code={} (char: '{}'), down={}", 
+                     key_code, 
+                     char::from_u32(key_code).unwrap_or('?'), 
+                     is_down);
             
             if let Err(e) = simulate(&event_type) {
                 eprintln!("模拟按键失败: {:?}", e);
             }
         } else {
-            println!("[InputSimulator] 未知键码: {}", key_code);
+            println!("[InputSimulator] 未知键码: {} (char: '{}')", 
+                     key_code, 
+                     char::from_u32(key_code).unwrap_or('?'));
         }
     }
 
     fn map_key_code(&self, code: u32) -> Option<Key> {
-        // 简化的键码映射
+        // 键码映射 - 支持大小写字母
         match code {
-            // 字母 A-Z (ASCII)
+            // 字母 A-Z (大写 ASCII 65-90)
             65 => Some(Key::KeyA), 66 => Some(Key::KeyB), 67 => Some(Key::KeyC),
             68 => Some(Key::KeyD), 69 => Some(Key::KeyE), 70 => Some(Key::KeyF),
             71 => Some(Key::KeyG), 72 => Some(Key::KeyH), 73 => Some(Key::KeyI),
@@ -104,6 +106,17 @@ impl InputSimulator {
             86 => Some(Key::KeyV), 87 => Some(Key::KeyW), 88 => Some(Key::KeyX),
             89 => Some(Key::KeyY), 90 => Some(Key::KeyZ),
             
+            // 字母 a-z (小写 ASCII 97-122)
+            97 => Some(Key::KeyA), 98 => Some(Key::KeyB), 99 => Some(Key::KeyC),
+            100 => Some(Key::KeyD), 101 => Some(Key::KeyE), 102 => Some(Key::KeyF),
+            103 => Some(Key::KeyG), 104 => Some(Key::KeyH), 105 => Some(Key::KeyI),
+            106 => Some(Key::KeyJ), 107 => Some(Key::KeyK), 108 => Some(Key::KeyL),
+            109 => Some(Key::KeyM), 110 => Some(Key::KeyN), 111 => Some(Key::KeyO),
+            112 => Some(Key::KeyP), 113 => Some(Key::KeyQ), 114 => Some(Key::KeyR),
+            115 => Some(Key::KeyS), 116 => Some(Key::KeyT), 117 => Some(Key::KeyU),
+            118 => Some(Key::KeyV), 119 => Some(Key::KeyW), 120 => Some(Key::KeyX),
+            121 => Some(Key::KeyY), 122 => Some(Key::KeyZ),
+            
             // 数字 0-9
             48 => Some(Key::Num0), 49 => Some(Key::Num1), 50 => Some(Key::Num2),
             51 => Some(Key::Num3), 52 => Some(Key::Num4), 53 => Some(Key::Num5),
@@ -112,13 +125,42 @@ impl InputSimulator {
             
             // 特殊键
             13 => Some(Key::Return),
+            10 => Some(Key::Return), // 换行符
             27 => Some(Key::Escape),
             32 => Some(Key::Space),
             8 => Some(Key::Backspace),
             9 => Some(Key::Tab),
-            16 => Some(Key::ShiftLeft),
-            17 => Some(Key::ControlLeft),
-            18 => Some(Key::Alt),
+            
+            // 标点符号
+            33 => Some(Key::Num1),      // !
+            64 => Some(Key::Num2),      // @
+            35 => Some(Key::Num3),      // #
+            36 => Some(Key::Num4),      // $
+            37 => Some(Key::Num5),      // %
+            94 => Some(Key::Num6),      // ^
+            38 => Some(Key::Num7),      // &
+            42 => Some(Key::Num8),      // *
+            40 => Some(Key::Num9),      // (
+            41 => Some(Key::Num0),      // )
+            45 => Some(Key::Minus),     // -
+            95 => Some(Key::Minus),     // _
+            61 => Some(Key::Equal),     // =
+            43 => Some(Key::Equal),     // +
+            91 => Some(Key::LeftBracket),   // [
+            93 => Some(Key::RightBracket),  // ]
+            92 => Some(Key::BackSlash),     // \
+            59 => Some(Key::SemiColon),     // ;
+            58 => Some(Key::SemiColon),     // :
+            39 => Some(Key::Quote),         // '
+            34 => Some(Key::Quote),         // "
+            44 => Some(Key::Comma),         // ,
+            60 => Some(Key::Comma),         // <
+            46 => Some(Key::Dot),           // .
+            62 => Some(Key::Dot),           // >
+            47 => Some(Key::Slash),         // /
+            63 => Some(Key::Slash),         // ?
+            96 => Some(Key::BackQuote),     // `
+            126 => Some(Key::BackQuote),    // ~
             
             _ => None,
         }

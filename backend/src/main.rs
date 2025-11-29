@@ -150,7 +150,6 @@ async fn main() -> Result<()> {
     
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
-    let active_connections_clone = Arc::clone(&active_connections);
     let pending_connections_clone = Arc::clone(&pending_connections);
     let latest_request_clone = Arc::clone(&latest_connection_request);
     let ws_server_for_tcp = Arc::clone(&ws_server);
@@ -468,7 +467,7 @@ async fn main() -> Result<()> {
                             
                             tokio::spawn(async move {
                                 use tokio::net::TcpStream;
-                                use tokio::time::{timeout, Duration};
+                                use tokio::time::Duration;
                                 
                                 match tokio::time::timeout(
                                     Duration::from_secs(5),
@@ -681,39 +680,81 @@ async fn main() -> Result<()> {
                                         println!("  ✓ 连接已建立，开始接收输入事件");
                                         
                                         // Create input simulator
-                                        let simulator = InputSimulator::new();
+                                        let simulator = Arc::new(InputSimulator::new());
                                         
                                         // Start receiving input events
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         tokio::spawn(async move {
+                                            // Mouse movement accumulator for smooth movement
+                                            let mut mouse_accumulator = (0.0f64, 0.0f64);
+                                            let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(8));
+                                            mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                            
+                                            // Channel for receiving messages
+                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(100);
+                                            
+                                            // Spawn task to receive TCP messages
+                                            let stream_arc_clone = Arc::clone(&stream_arc);
+                                            tokio::spawn(async move {
+                                                loop {
+                                                    let mut stream_guard = stream_arc_clone.lock().await;
+                                                    match Transport::recv_tcp(&mut *stream_guard).await {
+                                                        Ok(msg) => {
+                                                            drop(stream_guard);
+                                                            if msg_tx.send(msg).await.is_err() {
+                                                                break;
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            println!("接收输入事件失败: {}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                            
+                                            // Main processing loop
                                             loop {
-                                                let mut stream_guard = stream_arc.lock().await;
-                                                match Transport::recv_tcp(&mut *stream_guard).await {
-                                                    Ok(msg) => {
-                                                        drop(stream_guard); // Release lock before processing
+                                                tokio::select! {
+                                                    // Flush accumulated mouse movement
+                                                    _ = mouse_flush_interval.tick() => {
+                                                        let dx = mouse_accumulator.0 as i32;
+                                                        let dy = mouse_accumulator.1 as i32;
                                                         
+                                                        if dx != 0 || dy != 0 {
+                                                            simulator.mouse_move(dx, dy);
+                                                            
+                                                            // Forward to frontend for visualization
+                                                            let event = InputEvent {
+                                                                event_type: "mousemove".to_string(),
+                                                                x: None,
+                                                                y: None,
+                                                                dx: Some(dx as f64),
+                                                                dy: Some(dy as f64),
+                                                                key: None,
+                                                                timestamp: std::time::SystemTime::now()
+                                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis() as u64,
+                                                            };
+                                                            ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                            
+                                                            // Subtract sent amount, keep fractional part
+                                                            mouse_accumulator.0 -= dx as f64;
+                                                            mouse_accumulator.1 -= dy as f64;
+                                                        }
+                                                    }
+                                                    
+                                                    // Process incoming messages
+                                                    Some(msg) = msg_rx.recv() => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Execute input
-                                                                simulator.mouse_move(x, y);
-                                                                
-                                                                // Forward to frontend for visualization
-                                                                let event = InputEvent {
-                                                                    event_type: "mousemove".to_string(),
-                                                                    x: None,
-                                                                    y: None,
-                                                                    dx: Some(x as f64),
-                                                                    dy: Some(y as f64),
-                                                                    key: None,
-                                                                    timestamp: std::time::SystemTime::now()
-                                                                        .duration_since(std::time::UNIX_EPOCH)
-                                                                        .unwrap()
-                                                                        .as_millis() as u64,
-                                                                };
-                                                                ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                                // Accumulate mouse movement
+                                                                mouse_accumulator.0 += x as f64;
+                                                                mouse_accumulator.1 += y as f64;
                                                             }
                                                             Message::MouseClick { button, state } => {
-                                                                // Execute input
+                                                                // Execute input immediately
                                                                 simulator.mouse_click(button, state);
                                                                 
                                                                 // Forward to frontend for visualization
@@ -732,7 +773,7 @@ async fn main() -> Result<()> {
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
                                                             Message::KeyPress { key, state } => {
-                                                                // Execute input
+                                                                // Execute input immediately
                                                                 simulator.key_press(key, state);
                                                                 
                                                                 // Forward to frontend for visualization
@@ -755,12 +796,11 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        println!("接收输入事件失败: {}", e);
-                                                        break;
-                                                    }
+                                                    
+                                                    else => break,
                                                 }
                                             }
+                                            
                                             println!("输入事件接收循环结束");
                                             
                                             // Notify frontend about disconnection
