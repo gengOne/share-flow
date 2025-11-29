@@ -89,6 +89,7 @@ const App: React.FC = () => {
   // --- Actions ---
 
   const connectToDevice = async (device: Device) => {
+    console.log('[App] 开始连接到设备:', device);
     setPendingDeviceId(device.id);
     setConnectionStatus(ConnectionState.CONNECTING);
     
@@ -96,19 +97,27 @@ const App: React.FC = () => {
     // If we initiate connection, we typically want to CONTROL the other device (Host Mode)
     // But this can be negotiated. For this demo, assuming "Connect" -> "I Control You".
     try {
+        console.log('[App] 调用 backend.requestConnection...');
         const success = await backend.requestConnection(device.id);
+        console.log('[App] requestConnection 返回:', success);
         
         // Check if user cancelled while waiting
-        if (connectionStatus === ConnectionState.DISCONNECTED) return; 
+        if (connectionStatus === ConnectionState.DISCONNECTED) {
+            console.log('[App] 用户已取消连接');
+            return;
+        }
 
         if (success) {
+            console.log('[App] 连接成功，更新状态');
             setConnectionStatus(ConnectionState.CONNECTED);
             setConnectedDevice(device);
             setAppMode(AppMode.HOSTING); // We become the Host (Sender)
         } else {
+            console.log('[App] 连接失败');
             handleConnectFail("对方拒绝了连接请求");
         }
     } catch (e) {
+        console.error('[App] 连接异常:', e);
         handleConnectFail("连接超时");
     }
   };
