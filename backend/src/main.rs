@@ -210,6 +210,7 @@ async fn main() -> Result<()> {
             
             // Handle WebSocket messages from frontend
             Ok(ws_msg) = ws_broadcast_rx.recv() => {
+                println!("\n[WS] 收到前端消息: {:?}", ws_msg);
                 match ws_msg {
                     WsMessage::GetLocalInfo => {
                         println!("Frontend requested local device info");

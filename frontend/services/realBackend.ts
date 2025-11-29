@@ -140,7 +140,10 @@ class RealBackendService {
         break;
 
       case 'connectionFailed':
-        this.emit('connection-failed', msg.reason || 'Unknown error');
+        this.emit('connection-failed', {
+          deviceId: msg.deviceId,
+          reason: msg.reason || 'Unknown error'
+        });
         break;
 
       case 'disconnected':
@@ -220,7 +223,7 @@ class RealBackendService {
     console.log(`[RealBackend] Requesting connection to ${targetDeviceId}`);
     this.send({ 
       type: 'requestConnection', 
-      targetDeviceId 
+      target_device_id: targetDeviceId  // Use snake_case for Rust backend
     });
 
     return new Promise((resolve) => {
@@ -232,10 +235,14 @@ class RealBackendService {
         }
       };
 
-      const onFailed = () => {
-        this.off('connection-established', onEstablished);
-        this.off('connection-failed', onFailed);
-        resolve(false);
+      const onFailed = (data: any) => {
+        // Check if this failure is for our target device
+        if (!data.deviceId || data.deviceId === targetDeviceId) {
+          this.off('connection-established', onEstablished);
+          this.off('connection-failed', onFailed);
+          console.error(`[RealBackend] Connection failed: ${data.reason}`);
+          resolve(false);
+        }
       };
 
       this.on('connection-established', onEstablished);
@@ -259,7 +266,7 @@ class RealBackendService {
     console.log(`[RealBackend] Accepting connection from ${targetDeviceId}`);
     this.send({ 
       type: 'acceptConnection', 
-      targetDeviceId 
+      target_device_id: targetDeviceId  // Use snake_case for Rust backend
     });
   }
 
