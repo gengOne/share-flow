@@ -1,4 +1,4 @@
-use rdev::{simulate, Button, EventType, Key, SimulateError};
+use rdev::{simulate, Button, EventType, Key};
 use std::thread;
 use std::time::Duration;
 
@@ -12,57 +12,31 @@ impl InputSimulator {
     pub fn mouse_move(&self, dx: i32, dy: i32) {
         println!("[InputSimulator] 鼠标移动: dx={}, dy={}", dx, dy);
         
-        // 使用 Windows API 进行相对鼠标移动
+        // 使用 Windows API 进行鼠标移动
         #[cfg(windows)]
         {
-            use std::ffi::c_void;
-            use std::mem;
-            
             #[repr(C)]
-            struct INPUT {
-                input_type: u32,
-                data: [u8; 24], // 足够大的空间
+            struct POINT {
+                x: i32,
+                y: i32,
             }
-            
-            #[repr(C)]
-            struct MOUSEINPUT {
-                dx: i32,
-                dy: i32,
-                mouse_data: u32,
-                flags: u32,
-                time: u32,
-                extra_info: *mut c_void,
-            }
-            
-            const INPUT_MOUSE: u32 = 0;
-            const MOUSEEVENTF_MOVE: u32 = 0x0001;
             
             extern "system" {
-                fn SendInput(inputs: u32, input: *const INPUT, size: i32) -> u32;
+                fn GetCursorPos(point: *mut POINT) -> i32;
+                fn SetCursorPos(x: i32, y: i32) -> i32;
             }
             
-            let mouse_input = MOUSEINPUT {
-                dx,
-                dy,
-                mouse_data: 0,
-                flags: MOUSEEVENTF_MOVE,
-                time: 0,
-                extra_info: std::ptr::null_mut(),
-            };
-            
-            let mut input = INPUT {
-                input_type: INPUT_MOUSE,
-                data: [0; 24],
-            };
-            
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    &mouse_input as *const _ as *const u8,
-                    input.data.as_mut_ptr(),
-                    mem::size_of::<MOUSEINPUT>(),
-                );
-                
-                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+                // 使用 SetCursorPos 直接设置鼠标位置
+                let mut point = POINT { x: 0, y: 0 };
+                if GetCursorPos(&mut point) != 0 {
+                    let new_x = point.x + dx;
+                    let new_y = point.y + dy;
+                    SetCursorPos(new_x, new_y);
+                    println!("  移动鼠标从 ({}, {}) 到 ({}, {})", point.x, point.y, new_x, new_y);
+                } else {
+                    eprintln!("  获取鼠标位置失败");
+                }
             }
         }
         
