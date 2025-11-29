@@ -133,6 +133,13 @@ class RealBackendService {
         }
         break;
 
+      case 'connectionRequestCancelled':
+        if (msg.deviceId) {
+          console.log('[RealBackend] Connection request cancelled:', msg.deviceId);
+          this.emit('connection-request-cancelled', msg.deviceId);
+        }
+        break;
+
       case 'connectionEstablished':
         if (msg.deviceId) {
           this.emit('connection-established', msg.deviceId);

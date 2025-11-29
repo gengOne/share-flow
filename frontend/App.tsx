@@ -60,16 +60,26 @@ const App: React.FC = () => {
       }
     };
 
+    const handleRequestCancelled = (deviceId: string) => {
+      console.log('[App] 连接请求被取消:', deviceId);
+      // Close the dialog if it matches the cancelled request
+      if (incomingRequest && incomingRequest.id === deviceId) {
+        setIncomingRequest(null);
+      }
+    };
+
     backend.on('local-info', handleLocalInfo);
     backend.on('device-found', handleDeviceFound);
     backend.on('disconnected', handleDisconnect);
     backend.on('connection-request', handleIncomingRequest);
+    backend.on('connection-request-cancelled', handleRequestCancelled);
 
     return () => {
       backend.off('local-info', handleLocalInfo);
       backend.off('device-found', handleDeviceFound);
       backend.off('disconnected', handleDisconnect);
       backend.off('connection-request', handleIncomingRequest);
+      backend.off('connection-request-cancelled', handleRequestCancelled);
     };
   }, [connectionStatus]);
 

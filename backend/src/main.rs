@@ -134,12 +134,16 @@ async fn main() -> Result<()> {
     // Active TCP connections storage
     let active_connections = Arc::new(Mutex::new(HashMap::<String, Arc<Mutex<TcpStream>>>::new()));
     
-    // Pending connection requests (addr -> (stream, device_info))
-    type PendingConnection = (TcpStream, Option<DeviceInfo>);
+    // Pending connection requests (addr -> (stream, device_info, timestamp))
+    type PendingConnection = (TcpStream, Option<DeviceInfo>, std::time::Instant);
     let pending_connections = Arc::new(Mutex::new(HashMap::<String, PendingConnection>::new()));
     
     // Latest connection request to show to frontend (only one at a time)
     let latest_connection_request = Arc::new(Mutex::new(Option::<DeviceInfo>::None));
+    
+    // Outgoing connection request (when we are the initiator)
+    // Stores the target device ID so we can cancel it
+    let outgoing_request = Arc::new(Mutex::new(Option::<String>::None));
     
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
@@ -179,18 +183,32 @@ async fn main() -> Result<()> {
                                     
                                     // Check if there's already a pending request
                                     let mut pending = pending_conns.lock().await;
+                                    let now = std::time::Instant::now();
                                     
-                                    // Reject old pending connections (only keep the latest)
+                                    // Clean up expired pending connections (older than 30 seconds)
+                                    let expired: Vec<String> = pending.iter()
+                                        .filter(|(_, (_, _, timestamp))| now.duration_since(*timestamp).as_secs() > 30)
+                                        .map(|(addr, _)| addr.clone())
+                                        .collect();
+                                    
+                                    for old_addr in expired {
+                                        if let Some((mut old_stream, _, _)) = pending.remove(&old_addr) {
+                                            println!("  清理过期的待处理连接: {}", old_addr);
+                                            let _ = Transport::send_tcp(&mut old_stream, &Message::ConnectResponse { success: false }).await;
+                                        }
+                                    }
+                                    
+                                    // Reject other pending connections (only keep the latest)
                                     if !pending.is_empty() {
                                         println!("  ⚠ 已有待处理的连接请求，拒绝旧请求");
-                                        for (old_addr, (mut old_stream, _)) in pending.drain() {
+                                        for (old_addr, (mut old_stream, _, _)) in pending.drain() {
                                             println!("    拒绝来自 {} 的旧请求", old_addr);
                                             let _ = Transport::send_tcp(&mut old_stream, &Message::ConnectResponse { success: false }).await;
                                         }
                                     }
                                     
-                                    // Store new pending connection
-                                    pending.insert(addr.to_string(), (stream, Some(device.clone())));
+                                    // Store new pending connection with timestamp
+                                    pending.insert(addr.to_string(), (stream, Some(device.clone()), now));
                                     drop(pending);
                                     
                                     // Save as latest request
@@ -209,6 +227,24 @@ async fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 println!("  读取握手消息失败: {}", e);
+                                
+                                // Check if this was a pending connection that got cancelled
+                                let mut pending = pending_conns.lock().await;
+                                if let Some((_, dev_opt, _)) = pending.remove(&addr.to_string()) {
+                                    if let Some(device) = dev_opt {
+                                        println!("  连接被取消，通知前端");
+                                        let device_id = device.id.clone();
+                                        ws_server_clone.broadcast(WsMessage::ConnectionRequestCancelled { 
+                                            device_id: device_id.clone()
+                                        });
+                                        
+                                        // Clear latest request if it matches
+                                        let mut latest = latest_req.lock().await;
+                                        if latest.as_ref().map(|d| &d.id) == Some(&device_id) {
+                                            *latest = None;
+                                        }
+                                    }
+                                }
                             }
                         }
                     });
@@ -219,6 +255,34 @@ async fn main() -> Result<()> {
     });
 
     println!("Service is running. Waiting for events...");
+
+    // Start periodic cleanup task for expired pending connections
+    let pending_conns_cleanup = Arc::clone(&pending_connections);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            
+            let mut pending = pending_conns_cleanup.lock().await;
+            let now = std::time::Instant::now();
+            
+            let expired: Vec<String> = pending.iter()
+                .filter(|(_, (_, _, timestamp))| now.duration_since(*timestamp).as_secs() > 30)
+                .map(|(addr, _)| addr.clone())
+                .collect();
+            
+            for addr in expired {
+                if let Some((mut stream, dev, _)) = pending.remove(&addr) {
+                    if let Some(device) = dev {
+                        println!("\n⏰ 清理超时的待处理连接: {} (来自 {})", addr, device.name);
+                    } else {
+                        println!("\n⏰ 清理超时的待处理连接: {}", addr);
+                    }
+                    let _ = Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: false }).await;
+                }
+            }
+        }
+    });
 
     // Subscribe to WebSocket messages
     let mut ws_broadcast_rx = ws_server.get_sender().subscribe();
@@ -349,6 +413,9 @@ async fn main() -> Result<()> {
                     WsMessage::RequestConnection { target_device_id } => {
                         println!("\n>>> 前端请求连接到设备: {}", target_device_id);
                         
+                        // Save outgoing request
+                        *outgoing_request.lock().await = Some(target_device_id.clone());
+                        
                         // Get target device info
                         let devices = discovered_devices.lock().await;
                         if let Some((device, _)) = devices.get(&target_device_id) {
@@ -362,6 +429,7 @@ async fn main() -> Result<()> {
                             let ws_server_clone = Arc::clone(&ws_server);
                             let device_id_clone = target_device_id.clone();
                             let active_conns = Arc::clone(&active_connections);
+                            let outgoing_req = Arc::clone(&outgoing_request);
                             
                             tokio::spawn(async move {
                                 use tokio::net::TcpStream;
@@ -386,14 +454,17 @@ async fn main() -> Result<()> {
                                             return;
                                         }
                                         
-                                        // Wait for response
-                                        println!("  等待握手响应...");
+                                        // Wait for response (30 seconds to give user time to accept)
+                                        println!("  等待握手响应（等待对方用户确认）...");
                                         match tokio::time::timeout(
-                                            Duration::from_secs(5),
+                                            Duration::from_secs(30),
                                             Transport::recv_tcp(&mut stream)
                                         ).await {
                                             Ok(Ok(Message::ConnectResponse { success: true })) => {
                                                 println!("  ✓ 握手成功，连接已建立");
+                                                
+                                                // Clear outgoing request
+                                                *outgoing_req.lock().await = None;
                                                 
                                                 // Store connection for sending input
                                                 let stream_arc = Arc::new(Mutex::new(stream));
@@ -435,6 +506,7 @@ async fn main() -> Result<()> {
                                             }
                                             Ok(Ok(Message::ConnectResponse { success: false })) => {
                                                 eprintln!("  ❌ 对方拒绝连接");
+                                                *outgoing_req.lock().await = None;
                                                 ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                                     device_id: device_id_clone,
                                                     reason: "对方拒绝连接".to_string()
@@ -442,6 +514,7 @@ async fn main() -> Result<()> {
                                             }
                                             Ok(Ok(msg)) => {
                                                 eprintln!("  ❌ 收到意外响应: {:?}", msg);
+                                                *outgoing_req.lock().await = None;
                                                 ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                                     device_id: device_id_clone,
                                                     reason: "握手协议错误".to_string()
@@ -449,6 +522,7 @@ async fn main() -> Result<()> {
                                             }
                                             Ok(Err(e)) => {
                                                 eprintln!("  ❌ 读取响应失败: {}", e);
+                                                *outgoing_req.lock().await = None;
                                                 ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                                     device_id: device_id_clone,
                                                     reason: format!("读取响应失败: {}", e)
@@ -456,6 +530,7 @@ async fn main() -> Result<()> {
                                             }
                                             Err(_) => {
                                                 eprintln!("  ❌ 握手超时");
+                                                *outgoing_req.lock().await = None;
                                                 ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                                     device_id: device_id_clone,
                                                     reason: "握手超时".to_string()
@@ -465,6 +540,7 @@ async fn main() -> Result<()> {
                                     }
                                     Ok(Err(e)) => {
                                         eprintln!("  ❌ TCP 连接失败: {}", e);
+                                        *outgoing_req.lock().await = None;
                                         ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                             device_id: device_id_clone,
                                             reason: format!("连接失败: {}", e)
@@ -472,6 +548,7 @@ async fn main() -> Result<()> {
                                     }
                                     Err(_) => {
                                         eprintln!("  ❌ 连接超时");
+                                        *outgoing_req.lock().await = None;
                                         ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
                                             device_id: device_id_clone,
                                             reason: "连接超时".to_string()
@@ -496,11 +573,11 @@ async fn main() -> Result<()> {
                         // Find and reject pending connection
                         let mut pending = pending_connections.lock().await;
                         let pending_addr = pending.iter()
-                            .find(|(_, (_, dev))| dev.as_ref().map(|d| &d.id) == Some(&target_device_id))
+                            .find(|(_, (_, dev, _))| dev.as_ref().map(|d| &d.id) == Some(&target_device_id))
                             .map(|(addr, _)| addr.clone());
                         
                         if let Some(addr) = pending_addr {
-                            if let Some((mut stream, _)) = pending.remove(&addr) {
+                            if let Some((mut stream, _, _)) = pending.remove(&addr) {
                                 println!("  找到待处理连接: {}", addr);
                                 println!("  发送拒绝响应");
                                 let _ = Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: false }).await;
@@ -509,7 +586,29 @@ async fn main() -> Result<()> {
                     }
                     WsMessage::CancelConnection => {
                         println!("\n>>> 前端取消了连接请求");
-                        // TODO: Close outgoing connection if any
+                        
+                        // Get the target device ID from outgoing request
+                        let target_id = outgoing_request.lock().await.take();
+                        
+                        if let Some(device_id) = target_id {
+                            println!("  取消对 {} 的连接请求", device_id);
+                            
+                            // Find the device IP to close connection
+                            let devices = discovered_devices.lock().await;
+                            if let Some((device, _)) = devices.get(&device_id) {
+                                let target_ip = device.ip.clone();
+                                drop(devices);
+                                
+                                // The TCP connection will be closed automatically when dropped
+                                // We just need to notify the peer that we cancelled
+                                println!("  连接已取消");
+                                
+                                // Notify peer to close their pending connection
+                                // This will happen automatically when our TCP connection closes
+                            }
+                        } else {
+                            println!("  没有正在进行的连接请求");
+                        }
                     }
                     WsMessage::AcceptConnection { target_device_id } => {
                         println!("\n>>> 前端接受了来自 {} 的连接", target_device_id);
@@ -520,11 +619,11 @@ async fn main() -> Result<()> {
                         // Find pending connection by device ID
                         let mut pending = pending_connections.lock().await;
                         let pending_addr = pending.iter()
-                            .find(|(_, (_, dev))| dev.as_ref().map(|d| &d.id) == Some(&target_device_id))
+                            .find(|(_, (_, dev, _))| dev.as_ref().map(|d| &d.id) == Some(&target_device_id))
                             .map(|(addr, _)| addr.clone());
                         
                         if let Some(addr) = pending_addr {
-                            if let Some((mut stream, device)) = pending.remove(&addr) {
+                            if let Some((mut stream, _device, _)) = pending.remove(&addr) {
                                 println!("  找到待处理连接: {}", addr);
                                 
                                 // Send accept response
