@@ -111,12 +111,6 @@ const App: React.FC = () => {
         const success = await backend.requestConnection(device.id);
         console.log('[App] requestConnection 返回:', success);
         
-        // Check if user cancelled while waiting
-        if (connectionStatus === ConnectionState.DISCONNECTED) {
-            console.log('[App] 用户已取消连接');
-            return;
-        }
-
         if (success) {
             console.log('[App] 连接成功，更新状态');
             setConnectionStatus(ConnectionState.CONNECTED);
