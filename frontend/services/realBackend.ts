@@ -141,8 +141,12 @@ class RealBackendService {
         break;
 
       case 'connectionEstablished':
+        console.log('[RealBackend] Received connectionEstablished:', msg);
         if (msg.deviceId) {
+          console.log('[RealBackend] Emitting connection-established event with deviceId:', msg.deviceId);
           this.emit('connection-established', msg.deviceId);
+        } else {
+          console.error('[RealBackend] connectionEstablished message missing deviceId!', msg);
         }
         break;
 
@@ -235,10 +239,14 @@ class RealBackendService {
 
     return new Promise((resolve) => {
       const onEstablished = (deviceId: string) => {
+        console.log(`[RealBackend] onEstablished called with deviceId: ${deviceId}, expecting: ${targetDeviceId}`);
         if (deviceId === targetDeviceId) {
+          console.log('[RealBackend] Device ID matches! Resolving promise with true');
           this.off('connection-established', onEstablished);
           this.off('connection-failed', onFailed);
           resolve(true);
+        } else {
+          console.warn(`[RealBackend] Device ID mismatch: got ${deviceId}, expected ${targetDeviceId}`);
         }
       };
 
