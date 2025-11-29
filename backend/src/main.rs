@@ -929,9 +929,11 @@ async fn main() -> Result<()> {
                         if !connections.is_empty() {
                             match input_event.event_type.as_str() {
                                 "mousemove" => {
-                                    // For mouse move, use absolute position and calculate delta
-                                    // Note: rdev gives absolute position, we need to track previous position
-                                    // For now, we'll skip mousemove from capture as it's handled by JS pointer lock
+                                    // Accumulate mouse delta from Rust capture
+                                    if let (Some(dx), Some(dy)) = (input_event.dx, input_event.dy) {
+                                        accumulated_mouse_delta.0 += dx;
+                                        accumulated_mouse_delta.1 += dy;
+                                    }
                                 }
                                 "mousedown" | "mouseup" => {
                                     if let Some(key) = input_event.key {
@@ -942,11 +944,16 @@ async fn main() -> Result<()> {
                                             _ => 0,
                                         };
                                         let state = input_event.event_type == "mousedown";
+                                        println!("[主控端] 捕获到鼠标点击: button={}, state={}", button, state);
                                         let msg = Message::MouseClick { button, state };
                                         
                                         for stream_arc in connections.values() {
                                             let mut stream = stream_arc.lock().await;
-                                            let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                            if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
+                                                eprintln!("发送鼠标点击失败: {}", e);
+                                            } else {
+                                                println!("  ✓ 已发送到被控端");
+                                            }
                                         }
                                     }
                                 }
@@ -973,12 +980,19 @@ async fn main() -> Result<()> {
                                         
                                         if key_code != 0 {
                                             let state = input_event.event_type == "keydown";
+                                            println!("[主控端] 捕获到按键: key_str={}, key_code={}, state={}", key_str, key_code, state);
                                             let msg = Message::KeyPress { key: key_code, state };
                                             
                                             for stream_arc in connections.values() {
                                                 let mut stream = stream_arc.lock().await;
-                                                let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                                if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
+                                                    eprintln!("发送按键失败: {}", e);
+                                                } else {
+                                                    println!("  ✓ 已发送到被控端");
+                                                }
                                             }
+                                        } else {
+                                            println!("[主控端] 未知按键: {}", key_str);
                                         }
                                     }
                                 }

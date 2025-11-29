@@ -46,6 +46,11 @@ impl InputCapture {
             let tx_clone = tx.clone();
             let should_stop_clone = Arc::clone(&should_stop);
             
+            // Track previous mouse position for delta calculation
+            use std::sync::Mutex;
+            let last_mouse_pos = Arc::new(Mutex::new(Option::<(f64, f64)>::None));
+            let last_mouse_pos_clone = Arc::clone(&last_mouse_pos);
+            
             let callback = move |event: Event| -> Option<Event> {
                 // Check if we should stop
                 if should_stop_clone.load(Ordering::Relaxed) {
@@ -81,37 +86,52 @@ impl InputCapture {
                     _ => {}
                 }
                 
-                // Convert event to our format
-                let input_event = match event.event_type {
+                // Convert event to our format and decide whether to block
+                let (input_event, should_block) = match event.event_type {
                     EventType::MouseMove { x, y } => {
-                        Some(InputEventData {
-                            event_type: "mousemove".to_string(),
-                            key: None,
-                            x: Some(x),
-                            y: Some(y),
-                            dx: None,
-                            dy: None,
-                        })
+                        // Calculate delta from previous position
+                        let mut last_pos = last_mouse_pos_clone.lock().unwrap();
+                        let (dx, dy) = if let Some((last_x, last_y)) = *last_pos {
+                            (x - last_x, y - last_y)
+                        } else {
+                            (0.0, 0.0)
+                        };
+                        *last_pos = Some((x, y));
+                        drop(last_pos);
+                        
+                        // Only send if there's actual movement
+                        if dx != 0.0 || dy != 0.0 {
+                            (Some(InputEventData {
+                                event_type: "mousemove".to_string(),
+                                key: None,
+                                x: None,
+                                y: None,
+                                dx: Some(dx),
+                                dy: Some(dy),
+                            }), false) // Don't block mouse move
+                        } else {
+                            (None, false)
+                        }
                     }
                     EventType::KeyPress(key) => {
-                        Some(InputEventData {
+                        (Some(InputEventData {
                             event_type: "keydown".to_string(),
                             key: Some(format!("{:?}", key)),
                             x: None,
                             y: None,
                             dx: None,
                             dy: None,
-                        })
+                        }), true) // Block keyboard events
                     }
                     EventType::KeyRelease(key) => {
-                        Some(InputEventData {
+                        (Some(InputEventData {
                             event_type: "keyup".to_string(),
                             key: Some(format!("{:?}", key)),
                             x: None,
                             y: None,
                             dx: None,
                             dy: None,
-                        })
+                        }), true) // Block keyboard events
                     }
                     EventType::ButtonPress(button) => {
                         let button_name = match button {
@@ -120,14 +140,14 @@ impl InputCapture {
                             rdev::Button::Middle => "button1",
                             _ => "button0",
                         };
-                        Some(InputEventData {
+                        (Some(InputEventData {
                             event_type: "mousedown".to_string(),
                             key: Some(button_name.to_string()),
                             x: None,
                             y: None,
                             dx: None,
                             dy: None,
-                        })
+                        }), true) // Block mouse clicks
                     }
                     EventType::ButtonRelease(button) => {
                         let button_name = match button {
@@ -136,24 +156,24 @@ impl InputCapture {
                             rdev::Button::Middle => "button1",
                             _ => "button0",
                         };
-                        Some(InputEventData {
+                        (Some(InputEventData {
                             event_type: "mouseup".to_string(),
                             key: Some(button_name.to_string()),
                             x: None,
                             y: None,
                             dx: None,
                             dy: None,
-                        })
+                        }), true) // Block mouse clicks
                     }
                     EventType::Wheel { delta_x, delta_y } => {
-                        Some(InputEventData {
+                        (Some(InputEventData {
                             event_type: "wheel".to_string(),
                             key: None,
                             x: None,
                             y: None,
                             dx: Some(delta_x as f64),
                             dy: Some(delta_y as f64),
-                        })
+                        }), true) // Block wheel events
                     }
                 };
 
@@ -161,8 +181,12 @@ impl InputCapture {
                     let _ = tx_clone.send(CaptureControl::InputEvent(evt));
                 }
                 
-                // Block the event from propagating (return None)
-                None
+                // Block or pass through based on event type
+                if should_block {
+                    None // Block the event
+                } else {
+                    Some(event) // Pass through
+                }
             };
 
             println!("Starting global input capture (blocking mode)...");
