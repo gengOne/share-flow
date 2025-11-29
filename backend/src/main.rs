@@ -777,6 +777,31 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         
+                        // Throttle mouse move events (skip if too frequent)
+                        use std::sync::Mutex as StdMutex;
+                        use std::sync::OnceLock;
+                        static LAST_MOUSE_TIME: OnceLock<StdMutex<std::time::Instant>> = OnceLock::new();
+                        
+                        let should_send = match event.event_type.as_str() {
+                            "mousemove" => {
+                                let now = std::time::Instant::now();
+                                let time_lock = LAST_MOUSE_TIME.get_or_init(|| StdMutex::new(now));
+                                let mut last_time = time_lock.lock().unwrap();
+                                
+                                if now.duration_since(*last_time).as_millis() > 16 { // ~60 FPS
+                                    *last_time = now;
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => true,
+                        };
+                        
+                        if !should_send {
+                            continue;
+                        }
+                        
                         // Convert WebSocket InputEvent to Protocol Message
                         let input_msg = match event.event_type.as_str() {
                             "mousemove" => {
