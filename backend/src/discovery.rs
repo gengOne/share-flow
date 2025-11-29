@@ -107,23 +107,14 @@ impl Discovery {
         
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
-            let mut count = 0u64;
             
             loop {
                 interval.tick().await;
-                count += 1;
                 
                 // Broadcast to all network addresses
                 for addr in &addrs {
-                    match socket.send_to(&data, addr).await {
-                        Ok(sent) => {
-                            if count % 10 == 1 {  // 每10秒打印一次
-                                println!("[广播 #{}] 发送 {} 字节到 {}", count, sent, addr);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("❌ 广播到 {} 失败: {}", addr, e);
-                        }
+                    if let Err(e) = socket.send_to(&data, addr).await {
+                        eprintln!("❌ 广播到 {} 失败: {}", addr, e);
                     }
                 }
             }
@@ -144,25 +135,18 @@ impl Discovery {
         let mut buf = [0u8; 1024];
 
         tokio::spawn(async move {
-            let mut recv_count = 0u64;
-            
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) => {
-                        recv_count += 1;
-                        println!("[接收 #{}] 收到 {} 字节来自 {}", recv_count, len, addr);
-                        
                         match bincode::deserialize::<Message>(&buf[..len]) {
                             Ok(msg) => {
-                                println!("  ✓ 消息解析成功: {:?}", msg);
                                 if let Err(e) = tx.send((msg, addr)).await {
-                                    eprintln!("  ❌ 发送到主循环失败: {}", e);
+                                    eprintln!("❌ 发送到主循环失败: {}", e);
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("  ❌ 消息反序列化失败: {}", e);
-                                eprintln!("  原始数据 (前32字节): {:?}", &buf[..len.min(32)]);
+                                eprintln!("❌ 消息反序列化失败: {} (来自 {})", e, addr);
                             }
                         }
                     }

@@ -175,21 +175,12 @@ async fn main() -> Result<()> {
         tokio::select! {
             // Handle UDP Discovery Events
             Some((msg, addr)) = rx.recv() => {
-                println!("\n>>> 主循环收到 UDP 消息来自 {}", addr);
                 match msg {
                     Message::Discovery { id, name, port: peer_port } => {
-                        println!("  消息类型: Discovery");
-                        println!("  设备 ID: {}", id);
-                        println!("  设备名称: {}", name);
-                        println!("  端口: {}", peer_port);
-                        
                         // Skip our own broadcasts
                         if id == device_id {
-                            println!("  -> 跳过 (这是本机的广播)");
                             continue;
                         }
-                        
-                        println!("  ✓ 发现新设备: {} ({}) at {}:{}", name, id, addr.ip(), peer_port);
                         
                         let device = DeviceInfo {
                             id: id.clone(),
@@ -198,15 +189,20 @@ async fn main() -> Result<()> {
                             device_type: "DESKTOP".to_string(),
                         };
                         
-                        // Store device
-                        discovered_devices.lock().await.insert(id.clone(), device.clone());
-                        println!("  -> 已保存到设备列表");
-                        
-                        // Notify frontend
-                        ws_server.broadcast(WsMessage::DeviceFound { device });
-                        println!("  -> 已通知前端");
+                        // Only log and notify if this is a new device or hasn't been seen recently
+                        let mut devices = discovered_devices.lock().await;
+                        if !devices.contains_key(&id) {
+                            println!("\n✓ 发现新设备: {} ({}) at {}:{}", name, id, addr.ip(), peer_port);
+                            devices.insert(id.clone(), device.clone());
+                            
+                            // Notify frontend
+                            ws_server.broadcast(WsMessage::DeviceFound { device });
+                        } else {
+                            // Update existing device info silently
+                            devices.insert(id.clone(), device);
+                        }
                     }
-                    _ => println!("  其他消息类型: {:?}", msg),
+                    _ => println!("收到其他消息: {:?}", msg),
                 }
             }
             
@@ -253,16 +249,58 @@ async fn main() -> Result<()> {
                         }
                     }
                     WsMessage::RequestConnection { target_device_id } => {
-                        println!("Frontend requested connection to: {}", target_device_id);
-                        // TODO: Implement actual TCP connection logic
-                        // For now, simulate success after 2 seconds
-                        let ws_server_clone = Arc::clone(&ws_server);
-                        tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                            ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
-                                device_id: target_device_id 
+                        println!("\n>>> 前端请求连接到设备: {}", target_device_id);
+                        
+                        // Get target device info
+                        let devices = discovered_devices.lock().await;
+                        if let Some(device) = devices.get(&target_device_id) {
+                            let target_ip = device.ip.clone();
+                            let target_name = device.name.clone();
+                            drop(devices);
+                            
+                            println!("  目标设备: {} ({})", target_name, target_ip);
+                            println!("  尝试建立 TCP 连接到 {}:8080", target_ip);
+                            
+                            let ws_server_clone = Arc::clone(&ws_server);
+                            let device_id_clone = target_device_id.clone();
+                            
+                            tokio::spawn(async move {
+                                use tokio::net::TcpStream;
+                                use tokio::time::{timeout, Duration};
+                                
+                                match timeout(
+                                    Duration::from_secs(5),
+                                    TcpStream::connect(format!("{}:8080", target_ip))
+                                ).await {
+                                    Ok(Ok(stream)) => {
+                                        println!("  ✓ TCP 连接成功: {}", stream.peer_addr().unwrap());
+                                        ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
+                                            device_id: device_id_clone 
+                                        });
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("  ❌ TCP 连接失败: {}", e);
+                                        ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                            device_id: device_id_clone,
+                                            reason: format!("连接失败: {}", e)
+                                        });
+                                    }
+                                    Err(_) => {
+                                        eprintln!("  ❌ 连接超时");
+                                        ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                            device_id: device_id_clone,
+                                            reason: "连接超时".to_string()
+                                        });
+                                    }
+                                }
                             });
-                        });
+                        } else {
+                            eprintln!("  ❌ 未找到设备: {}", target_device_id);
+                            ws_server.broadcast(WsMessage::ConnectionFailed {
+                                device_id: target_device_id,
+                                reason: "设备未找到".to_string()
+                            });
+                        }
                     }
                     WsMessage::CancelConnection => {
                         println!("Frontend cancelled connection request");

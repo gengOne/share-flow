@@ -26,7 +26,7 @@ pub enum WsMessage {
     DeviceFound { device: DeviceInfo },
     ConnectionRequest { device: DeviceInfo },
     ConnectionEstablished { device_id: String },
-    ConnectionFailed { reason: String },
+    ConnectionFailed { device_id: String, reason: String },
     Disconnected,
     RemoteInput { event: InputEvent },
 }
