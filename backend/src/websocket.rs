@@ -26,9 +26,19 @@ pub enum WsMessage {
     LocalInput { event: InputEvent },
     DeviceFound { device: DeviceInfo },
     ConnectionRequest { device: DeviceInfo },
-    ConnectionRequestCancelled { device_id: String },
-    ConnectionEstablished { device_id: String },
-    ConnectionFailed { device_id: String, reason: String },
+    ConnectionRequestCancelled { 
+        #[serde(rename = "deviceId")]
+        device_id: String 
+    },
+    ConnectionEstablished { 
+        #[serde(rename = "deviceId")]
+        device_id: String 
+    },
+    ConnectionFailed { 
+        #[serde(rename = "deviceId")]
+        device_id: String, 
+        reason: String 
+    },
     Disconnected,
     RemoteInput { event: InputEvent },
 }
