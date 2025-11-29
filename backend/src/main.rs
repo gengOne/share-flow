@@ -161,6 +161,9 @@ async fn main() -> Result<()> {
             match listener.accept().await {
                 Ok((mut stream, addr)) => {
                     println!("\n>>> 收到 TCP 连接来自: {}", addr);
+                    if let Err(e) = stream.set_nodelay(true) {
+                        eprintln!("Failed to set TCP_NODELAY: {}", e);
+                    }
                     
                     let ws_server_clone = Arc::clone(&ws_server_for_tcp);
                     let pending_conns = Arc::clone(&pending_connections_clone);
@@ -448,6 +451,9 @@ async fn main() -> Result<()> {
                                     Ok(Ok(mut stream)) => {
                                         let peer_addr = stream.peer_addr().unwrap();
                                         println!("  ✓ TCP 连接成功: {}", peer_addr);
+                                        if let Err(e) = stream.set_nodelay(true) {
+                                            eprintln!("Failed to set TCP_NODELAY: {}", e);
+                                        }
                                         
                                         // Send handshake
                                         println!("  发送连接请求握手...");

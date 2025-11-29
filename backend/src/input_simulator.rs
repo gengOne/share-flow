@@ -66,9 +66,6 @@ impl InputSimulator {
         if let Err(e) = simulate(&event_type) {
             eprintln!("模拟鼠标点击失败: {:?}", e);
         }
-        
-        // 添加小延迟以确保事件被处理
-        thread::sleep(Duration::from_millis(10));
     }
 
     pub fn key_press(&self, key_code: u32, is_down: bool) {
@@ -88,8 +85,6 @@ impl InputSimulator {
             if let Err(e) = simulate(&event_type) {
                 eprintln!("模拟按键失败: {:?}", e);
             }
-            
-            thread::sleep(Duration::from_millis(10));
         } else {
             println!("[InputSimulator] 未知键码: {}", key_code);
         }
