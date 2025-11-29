@@ -10,8 +10,9 @@ use protocol::Message;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::Duration;
 use transport::Transport;
 use websocket::{DeviceInfo, InputEvent, WebSocketServer, WsMessage};
 use input_capture::{CaptureControl, InputCapture};
@@ -130,22 +131,56 @@ async fn main() -> Result<()> {
     println!("\n>>> 启动广播，消息内容: {:?}", broadcast_msg);
     discovery.start_broadcast(broadcast_msg);
 
+    // Active TCP connections storage
+    let active_connections = Arc::new(Mutex::new(HashMap::<String, Arc<Mutex<TcpStream>>>::new()));
+    
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
+    let active_connections_clone = Arc::clone(&active_connections);
+    let ws_server_for_tcp = Arc::clone(&ws_server);
     
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((mut stream, addr)) => {
-                    println!("New TCP connection from: {}", addr);
+                    println!("\n>>> 收到 TCP 连接来自: {}", addr);
+                    
+                    let _ws_server_clone = Arc::clone(&ws_server_for_tcp);
+                    let connections = Arc::clone(&active_connections_clone);
+                    
                     tokio::spawn(async move {
-                        loop {
-                            match Transport::recv_tcp(&mut stream).await {
-                                Ok(msg) => println!("Received TCP from {}: {:?}", addr, msg),
-                                Err(e) => {
-                                    println!("TCP connection error from {}: {}", addr, e);
-                                    break;
+                        // Read handshake message
+                        match Transport::recv_tcp(&mut stream).await {
+                            Ok(Message::ConnectRequest) => {
+                                println!("  收到连接请求握手");
+                                
+                                // Send response
+                                if let Err(e) = Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: true }).await {
+                                    eprintln!("  发送握手响应失败: {}", e);
+                                    return;
                                 }
+                                
+                                println!("  ✓ 握手成功，连接已建立");
+                                
+                                // Store connection
+                                let stream_arc = Arc::new(Mutex::new(stream));
+                                connections.lock().await.insert(addr.to_string(), stream_arc.clone());
+                                
+                                // Notify frontend about incoming connection request
+                                // For now, we'll auto-accept
+                                // TODO: Implement proper connection request flow
+                                
+                                // Keep connection alive and handle messages
+                                loop {
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                    // TODO: Handle incoming input events
+                                }
+                            }
+                            Ok(msg) => {
+                                println!("  收到意外消息: {:?}", msg);
+                            }
+                            Err(e) => {
+                                println!("  读取握手消息失败: {}", e);
                             }
                         }
                     });
@@ -296,15 +331,72 @@ async fn main() -> Result<()> {
                                 use tokio::net::TcpStream;
                                 use tokio::time::{timeout, Duration};
                                 
-                                match timeout(
+                                match tokio::time::timeout(
                                     Duration::from_secs(5),
                                     TcpStream::connect(format!("{}:8080", target_ip))
                                 ).await {
-                                    Ok(Ok(stream)) => {
-                                        println!("  ✓ TCP 连接成功: {}", stream.peer_addr().unwrap());
-                                        ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
-                                            device_id: device_id_clone 
-                                        });
+                                    Ok(Ok(mut stream)) => {
+                                        let peer_addr = stream.peer_addr().unwrap();
+                                        println!("  ✓ TCP 连接成功: {}", peer_addr);
+                                        
+                                        // Send handshake
+                                        println!("  发送连接请求握手...");
+                                        if let Err(e) = Transport::send_tcp(&mut stream, &Message::ConnectRequest).await {
+                                            eprintln!("  发送握手失败: {}", e);
+                                            ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                                device_id: device_id_clone,
+                                                reason: format!("握手失败: {}", e)
+                                            });
+                                            return;
+                                        }
+                                        
+                                        // Wait for response
+                                        println!("  等待握手响应...");
+                                        match tokio::time::timeout(
+                                            Duration::from_secs(5),
+                                            Transport::recv_tcp(&mut stream)
+                                        ).await {
+                                            Ok(Ok(Message::ConnectResponse { success: true })) => {
+                                                println!("  ✓ 握手成功，连接已建立");
+                                                ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
+                                                    device_id: device_id_clone 
+                                                });
+                                                
+                                                // Keep connection alive
+                                                // TODO: Store connection and handle input forwarding
+                                                loop {
+                                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                                }
+                                            }
+                                            Ok(Ok(Message::ConnectResponse { success: false })) => {
+                                                eprintln!("  ❌ 对方拒绝连接");
+                                                ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                                    device_id: device_id_clone,
+                                                    reason: "对方拒绝连接".to_string()
+                                                });
+                                            }
+                                            Ok(Ok(msg)) => {
+                                                eprintln!("  ❌ 收到意外响应: {:?}", msg);
+                                                ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                                    device_id: device_id_clone,
+                                                    reason: "握手协议错误".to_string()
+                                                });
+                                            }
+                                            Ok(Err(e)) => {
+                                                eprintln!("  ❌ 读取响应失败: {}", e);
+                                                ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                                    device_id: device_id_clone,
+                                                    reason: format!("读取响应失败: {}", e)
+                                                });
+                                            }
+                                            Err(_) => {
+                                                eprintln!("  ❌ 握手超时");
+                                                ws_server_clone.broadcast(WsMessage::ConnectionFailed { 
+                                                    device_id: device_id_clone,
+                                                    reason: "握手超时".to_string()
+                                                });
+                                            }
+                                        }
                                     }
                                     Ok(Err(e)) => {
                                         eprintln!("  ❌ TCP 连接失败: {}", e);
