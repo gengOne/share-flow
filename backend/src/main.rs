@@ -104,8 +104,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Discovered devices
-    let discovered_devices = Arc::new(Mutex::new(HashMap::<String, DeviceInfo>::new()));
+    // Discovered devices with last seen timestamp
+    let discovered_devices = Arc::new(Mutex::new(HashMap::<String, (DeviceInfo, std::time::Instant)>::new()));
 
     // Input capture state
     let is_capturing = Arc::new(Mutex::new(false));
@@ -189,17 +189,19 @@ async fn main() -> Result<()> {
                             device_type: "DESKTOP".to_string(),
                         };
                         
-                        // Only log and notify if this is a new device or hasn't been seen recently
+                        let now = std::time::Instant::now();
+                        
+                        // Only log and notify if this is a new device
                         let mut devices = discovered_devices.lock().await;
                         if !devices.contains_key(&id) {
                             println!("\n✓ 发现新设备: {} ({}) at {}:{}", name, id, addr.ip(), peer_port);
-                            devices.insert(id.clone(), device.clone());
+                            devices.insert(id.clone(), (device.clone(), now));
                             
                             // Notify frontend
                             ws_server.broadcast(WsMessage::DeviceFound { device });
                         } else {
-                            // Update existing device info silently
-                            devices.insert(id.clone(), device);
+                            // Update timestamp silently
+                            devices.insert(id.clone(), (device, now));
                         }
                     }
                     _ => println!("收到其他消息: {:?}", msg),
@@ -220,8 +222,33 @@ async fn main() -> Result<()> {
                         ws_server.broadcast(WsMessage::LocalInfo { device: local_device });
                     }
                     WsMessage::StartDiscovery => {
-                        println!("Frontend requested discovery start");
-                        // Discovery is already running, just acknowledge
+                        println!("\n>>> 前端请求开始发现设备");
+                        
+                        // Clean up stale devices (not seen in last 10 seconds)
+                        let mut devices = discovered_devices.lock().await;
+                        let now = std::time::Instant::now();
+                        devices.retain(|id, (_, last_seen)| {
+                            let age = now.duration_since(*last_seen).as_secs();
+                            if age > 10 {
+                                println!("  移除过期设备: {} ({}秒未见)", id, age);
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        
+                        let device_count = devices.len();
+                        
+                        if device_count > 0 {
+                            println!("  发送 {} 个已发现的设备到前端", device_count);
+                            for (device, _) in devices.values() {
+                                ws_server.broadcast(WsMessage::DeviceFound { device: device.clone() });
+                            }
+                        } else {
+                            println!("  当前没有已发现的设备");
+                        }
+                        
+                        println!("  发现服务持续运行中...");
                     }
                     WsMessage::StartCapture => {
                         println!("Frontend requested to start input capture");
@@ -253,7 +280,7 @@ async fn main() -> Result<()> {
                         
                         // Get target device info
                         let devices = discovered_devices.lock().await;
-                        if let Some(device) = devices.get(&target_device_id) {
+                        if let Some((device, _)) = devices.get(&target_device_id) {
                             let target_ip = device.ip.clone();
                             let target_name = device.name.clone();
                             drop(devices);
