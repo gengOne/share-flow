@@ -142,8 +142,9 @@ async fn main() -> Result<()> {
     let latest_connection_request = Arc::new(Mutex::new(Option::<DeviceInfo>::None));
     
     // Outgoing connection request (when we are the initiator)
-    // Stores the target device ID so we can cancel it
-    let outgoing_request = Arc::new(Mutex::new(Option::<String>::None));
+    // Stores the target device ID and a cancel sender
+    type CancelSender = tokio::sync::oneshot::Sender<()>;
+    let outgoing_request = Arc::new(Mutex::new(Option::<(String, CancelSender)>::None));
     
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
@@ -413,8 +414,11 @@ async fn main() -> Result<()> {
                     WsMessage::RequestConnection { target_device_id } => {
                         println!("\n>>> 前端请求连接到设备: {}", target_device_id);
                         
-                        // Save outgoing request
-                        *outgoing_request.lock().await = Some(target_device_id.clone());
+                        // Create cancel channel
+                        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                        
+                        // Save outgoing request with cancel sender
+                        *outgoing_request.lock().await = Some((target_device_id.clone(), cancel_tx));
                         
                         // Get target device info
                         let devices = discovered_devices.lock().await;
@@ -456,10 +460,18 @@ async fn main() -> Result<()> {
                                         
                                         // Wait for response (30 seconds to give user time to accept)
                                         println!("  等待握手响应（等待对方用户确认）...");
-                                        match tokio::time::timeout(
-                                            Duration::from_secs(30),
-                                            Transport::recv_tcp(&mut stream)
-                                        ).await {
+                                        
+                                        let response_future = Transport::recv_tcp(&mut stream);
+                                        
+                                        tokio::select! {
+                                            _ = &mut cancel_rx => {
+                                                println!("  收到取消信号，关闭连接");
+                                                *outgoing_req.lock().await = None;
+                                                // Connection will be closed when stream is dropped
+                                                return;
+                                            }
+                                            result = tokio::time::timeout(Duration::from_secs(30), response_future) => {
+                                                match result {
                                             Ok(Ok(Message::ConnectResponse { success: true })) => {
                                                 println!("  ✓ 握手成功，连接已建立");
                                                 
@@ -538,6 +550,8 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
+                                        }
+                                    }
                                     Ok(Err(e)) => {
                                         eprintln!("  ❌ TCP 连接失败: {}", e);
                                         *outgoing_req.lock().await = None;
@@ -587,25 +601,15 @@ async fn main() -> Result<()> {
                     WsMessage::CancelConnection => {
                         println!("\n>>> 前端取消了连接请求");
                         
-                        // Get the target device ID from outgoing request
-                        let target_id = outgoing_request.lock().await.take();
+                        // Get the target device ID and cancel sender from outgoing request
+                        let request = outgoing_request.lock().await.take();
                         
-                        if let Some(device_id) = target_id {
+                        if let Some((device_id, cancel_tx)) = request {
                             println!("  取消对 {} 的连接请求", device_id);
                             
-                            // Find the device IP to close connection
-                            let devices = discovered_devices.lock().await;
-                            if let Some((device, _)) = devices.get(&device_id) {
-                                let target_ip = device.ip.clone();
-                                drop(devices);
-                                
-                                // The TCP connection will be closed automatically when dropped
-                                // We just need to notify the peer that we cancelled
-                                println!("  连接已取消");
-                                
-                                // Notify peer to close their pending connection
-                                // This will happen automatically when our TCP connection closes
-                            }
+                            // Send cancel signal
+                            let _ = cancel_tx.send(());
+                            println!("  已发送取消信号");
                         } else {
                             println!("  没有正在进行的连接请求");
                         }
