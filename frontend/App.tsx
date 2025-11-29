@@ -174,30 +174,8 @@ const App: React.FC = () => {
   };
 
   // --- Input Capture Logic (Host Mode) ---
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (appMode !== AppMode.HOSTING) return;
-    
-    const inputEvent: InputEvent = {
-        type: 'mousemove',
-        dx: e.movementX,
-        dy: e.movementY,
-        timestamp: Date.now()
-    };
-    backend.sendInputEvent(inputEvent);
-  }, [appMode]);
-
-  const handleKeyDownCapture = useCallback((e: React.KeyboardEvent) => {
-     if (appMode !== AppMode.HOSTING) return;
-     if (!(e.ctrlKey && e.altKey && e.key.toLowerCase() === 'q')) {
-         e.preventDefault();
-         const inputEvent: InputEvent = {
-             type: 'keydown',
-             key: e.key,
-             timestamp: Date.now()
-         };
-         backend.sendInputEvent(inputEvent);
-     }
-  }, [appMode]);
+  // Note: Input capture is handled by Rust backend (rdev), not JavaScript
+  // The capture area just needs to be focused to ensure the backend can capture events
 
 
   // --- Render Helpers ---
@@ -274,7 +252,7 @@ const App: React.FC = () => {
                 id: 'test-1',
                 name: '测试设备',
                 ip: '192.168.1.100',
-                type: 0
+                type: 'DESKTOP' as DeviceType
               };
               setConnectedDevice(testDevice);
               setConnectionStatus(ConnectionState.CONNECTED);
@@ -418,9 +396,7 @@ const App: React.FC = () => {
             <div 
                 ref={captureRef}
                 className="flex-1 m-4 rounded-2xl border-2 border-dashed border-indigo-500/20 bg-gray-900/20 flex flex-col items-center justify-center cursor-none outline-none focus:border-indigo-500/60 focus:bg-gray-900/40 transition-all duration-300 relative group overflow-hidden"
-                onMouseMove={handleMouseMove}
-                onKeyDown={handleKeyDownCapture}
-                onClick={() => captureRef.current?.requestPointerLock()}
+                onClick={() => captureRef.current?.focus()}
                 tabIndex={0}
             >
                 {/* Background Grid */}

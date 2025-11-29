@@ -8,33 +8,63 @@ impl InputSimulator {
     }
 
     pub fn mouse_move(&self, dx: i32, dy: i32) {
-        println!("[InputSimulator] 鼠标移动: dx={}, dy={}", dx, dy);
+        // 只在有实际移动时打印日志
+        if dx != 0 || dy != 0 {
+            println!("[InputSimulator] 鼠标移动: dx={}, dy={}", dx, dy);
+        }
         
         // 使用 Windows API 进行鼠标移动
         #[cfg(windows)]
         {
+            use std::mem;
+            
             #[repr(C)]
-            struct POINT {
-                x: i32,
-                y: i32,
+            struct INPUT {
+                type_: u32,
+                union_: INPUT_UNION,
             }
             
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            union INPUT_UNION {
+                mi: MOUSEINPUT,
+            }
+            
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct MOUSEINPUT {
+                dx: i32,
+                dy: i32,
+                mouse_data: u32,
+                dw_flags: u32,
+                time: u32,
+                dw_extra_info: usize,
+            }
+            
+            const INPUT_MOUSE: u32 = 0;
+            const MOUSEEVENTF_MOVE: u32 = 0x0001;
+            
             extern "system" {
-                fn GetCursorPos(point: *mut POINT) -> i32;
-                fn SetCursorPos(x: i32, y: i32) -> i32;
+                fn SendInput(n_inputs: u32, p_inputs: *const INPUT, cb_size: i32) -> u32;
             }
             
             unsafe {
-                // 使用 SetCursorPos 直接设置鼠标位置
-                let mut point = POINT { x: 0, y: 0 };
-                if GetCursorPos(&mut point) != 0 {
-                    let new_x = point.x + dx;
-                    let new_y = point.y + dy;
-                    SetCursorPos(new_x, new_y);
-                    println!("  移动鼠标从 ({}, {}) 到 ({}, {})", point.x, point.y, new_x, new_y);
-                } else {
-                    eprintln!("  获取鼠标位置失败");
-                }
+                // 使用 SendInput 进行相对移动（更高效）
+                let input = INPUT {
+                    type_: INPUT_MOUSE,
+                    union_: INPUT_UNION {
+                        mi: MOUSEINPUT {
+                            dx,
+                            dy,
+                            mouse_data: 0,
+                            dw_flags: MOUSEEVENTF_MOVE,
+                            time: 0,
+                            dw_extra_info: 0,
+                        },
+                    },
+                };
+                
+                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
             }
         }
         
@@ -46,6 +76,8 @@ impl InputSimulator {
     }
 
     pub fn mouse_click(&self, button: u8, is_down: bool) {
+        println!("[InputSimulator] 鼠标点击: button={}, down={}", button, is_down);
+        
         let rdev_button = match button {
             0 => Button::Left,
             1 => Button::Right,
@@ -58,11 +90,11 @@ impl InputSimulator {
         } else {
             EventType::ButtonRelease(rdev_button)
         };
-
-        println!("[InputSimulator] 鼠标点击: button={}, down={}", button, is_down);
         
         if let Err(e) = simulate(&event_type) {
             eprintln!("模拟鼠标点击失败: {:?}", e);
+        } else {
+            println!("  ✓ 鼠标点击成功");
         }
     }
 

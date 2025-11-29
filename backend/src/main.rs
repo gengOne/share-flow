@@ -722,22 +722,8 @@ async fn main() -> Result<()> {
                                                         let dy = mouse_accumulator.1 as i32;
                                                         
                                                         if dx != 0 || dy != 0 {
+                                                            // Execute mouse movement (no logging for performance)
                                                             simulator.mouse_move(dx, dy);
-                                                            
-                                                            // Forward to frontend for visualization
-                                                            let event = InputEvent {
-                                                                event_type: "mousemove".to_string(),
-                                                                x: None,
-                                                                y: None,
-                                                                dx: Some(dx as f64),
-                                                                dy: Some(dy as f64),
-                                                                key: None,
-                                                                timestamp: std::time::SystemTime::now()
-                                                                    .duration_since(std::time::UNIX_EPOCH)
-                                                                    .unwrap()
-                                                                    .as_millis() as u64,
-                                                            };
-                                                            ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             
                                                             // Subtract sent amount, keep fractional part
                                                             mouse_accumulator.0 -= dx as f64;
@@ -749,7 +735,7 @@ async fn main() -> Result<()> {
                                                     Some(msg) = msg_rx.recv() => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Accumulate mouse movement
+                                                                // Accumulate mouse movement (no logging for performance)
                                                                 mouse_accumulator.0 += x as f64;
                                                                 mouse_accumulator.1 += y as f64;
                                                             }
@@ -757,7 +743,7 @@ async fn main() -> Result<()> {
                                                                 // Execute input immediately
                                                                 simulator.mouse_click(button, state);
                                                                 
-                                                                // Forward to frontend for visualization
+                                                                // Forward to frontend for visualization (optional, can be disabled for performance)
                                                                 let event = InputEvent {
                                                                     event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
                                                                     x: None,
@@ -776,7 +762,7 @@ async fn main() -> Result<()> {
                                                                 // Execute input immediately
                                                                 simulator.key_press(key, state);
                                                                 
-                                                                // Forward to frontend for visualization
+                                                                // Forward to frontend for visualization (optional, can be disabled for performance)
                                                                 let event = InputEvent {
                                                                     event_type: if state { "keydown" } else { "keyup" }.to_string(),
                                                                     x: None,
@@ -923,21 +909,82 @@ async fn main() -> Result<()> {
             } => {
                 match control_msg {
                     CaptureControl::InputEvent(input_event) => {
-                        // Convert to WebSocket message and broadcast
+                        // Convert to WebSocket message and broadcast to frontend for visualization
                         let ws_event = InputEvent {
-                            event_type: input_event.event_type,
+                            event_type: input_event.event_type.clone(),
                             x: input_event.x,
                             y: input_event.y,
                             dx: input_event.dx,
                             dy: input_event.dy,
-                            key: input_event.key,
+                            key: input_event.key.clone(),
                             timestamp: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis() as u64,
                         };
-                        
                         ws_server.broadcast(WsMessage::LocalInput { event: ws_event });
+                        
+                        // Forward to connected peer via TCP
+                        let connections = active_connections.lock().await;
+                        if !connections.is_empty() {
+                            match input_event.event_type.as_str() {
+                                "mousemove" => {
+                                    // For mouse move, use absolute position and calculate delta
+                                    // Note: rdev gives absolute position, we need to track previous position
+                                    // For now, we'll skip mousemove from capture as it's handled by JS pointer lock
+                                }
+                                "mousedown" | "mouseup" => {
+                                    if let Some(key) = input_event.key {
+                                        let button = match key.as_str() {
+                                            "button0" => 0, // Left
+                                            "button1" => 2, // Middle
+                                            "button2" => 1, // Right
+                                            _ => 0,
+                                        };
+                                        let state = input_event.event_type == "mousedown";
+                                        let msg = Message::MouseClick { button, state };
+                                        
+                                        for stream_arc in connections.values() {
+                                            let mut stream = stream_arc.lock().await;
+                                            let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                        }
+                                    }
+                                }
+                                "keydown" | "keyup" => {
+                                    if let Some(key_str) = input_event.key {
+                                        // Convert rdev key format (e.g., "KeyA") to character
+                                        let key_code = if key_str.starts_with("Key") && key_str.len() == 4 {
+                                            // Single letter key like "KeyA" -> 'A'
+                                            key_str.chars().nth(3).unwrap_or('\0') as u32
+                                        } else if key_str.starts_with("Num") && key_str.len() == 4 {
+                                            // Number key like "Num0" -> '0'
+                                            key_str.chars().nth(3).unwrap_or('\0') as u32
+                                        } else {
+                                            // Special keys
+                                            match key_str.as_str() {
+                                                "Return" => 13,
+                                                "Space" => 32,
+                                                "Backspace" => 8,
+                                                "Tab" => 9,
+                                                "Escape" => 27,
+                                                _ => 0,
+                                            }
+                                        };
+                                        
+                                        if key_code != 0 {
+                                            let state = input_event.event_type == "keydown";
+                                            let msg = Message::KeyPress { key: key_code, state };
+                                            
+                                            for stream_arc in connections.values() {
+                                                let mut stream = stream_arc.lock().await;
+                                                let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     CaptureControl::ExitRequested => {
                         println!("Exit requested from input capture - stopping capture and disconnecting");

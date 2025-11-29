@@ -113,20 +113,32 @@ impl InputCapture {
                             dy: None,
                         })
                     }
-                    EventType::ButtonPress(_button) => {
+                    EventType::ButtonPress(button) => {
+                        let button_name = match button {
+                            rdev::Button::Left => "button0",
+                            rdev::Button::Right => "button2",
+                            rdev::Button::Middle => "button1",
+                            _ => "button0",
+                        };
                         Some(InputEventData {
                             event_type: "mousedown".to_string(),
-                            key: None,
+                            key: Some(button_name.to_string()),
                             x: None,
                             y: None,
                             dx: None,
                             dy: None,
                         })
                     }
-                    EventType::ButtonRelease(_button) => {
+                    EventType::ButtonRelease(button) => {
+                        let button_name = match button {
+                            rdev::Button::Left => "button0",
+                            rdev::Button::Right => "button2",
+                            rdev::Button::Middle => "button1",
+                            _ => "button0",
+                        };
                         Some(InputEventData {
                             event_type: "mouseup".to_string(),
-                            key: None,
+                            key: Some(button_name.to_string()),
                             x: None,
                             y: None,
                             dx: None,
