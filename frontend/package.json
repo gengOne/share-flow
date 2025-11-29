@@ -1,0 +1,72 @@
+{
+  "name": "shareflow---局域网键鼠共享",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
+    "electron:build": "npm run rust:build-release && vite build && electron-builder",
+    "electron:pack": "npm run rust:build-release && vite build && electron-builder --dir",
+    "rust:build": "cd rust-service && cargo build",
+    "rust:run": "cd rust-service && cargo run",
+    "rust:build-release": "cd rust-service && cargo build --release",
+    "test:connection": "start test-connection.html"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.shareflow.app",
+    "productName": "ShareFlow",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "rust-service/target/release/rust-service.exe",
+        "to": "rust-service.exe",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    }
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.555.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0"
+  }
+}

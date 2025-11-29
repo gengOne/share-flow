@@ -1,0 +1,5 @@
+{
+  "name": "ShareFlow - 局域网键鼠共享",
+  "description": "局域网内键盘鼠标共享软件，支持设备发现、相互确认、快捷键退出等功能。",
+  "requestFramePermissions": []
+}

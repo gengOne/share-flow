@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 连接测试</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 {
+            color: #6366f1;
+        }
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status.disconnected {
+            background: #7f1d1d;
+            border: 2px solid #dc2626;
+        }
+        .status.connecting {
+            background: #78350f;
+            border: 2px solid #f59e0b;
+        }
+        .status.connected {
+            background: #14532d;
+            border: 2px solid #22c55e;
+        }
+        button {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #4f46e5;
+        }
+        button:disabled {
+            background: #4b5563;
+            cursor: not-allowed;
+        }
+        #log {
+            background: #0a0a0a;
+            border: 1px solid #374151;
+            padding: 15px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #6366f1;
+            padding-left: 10px;
+        }
+        .log-entry.error {
+            border-left-color: #dc2626;
+            color: #fca5a5;
+        }
+        .log-entry.success {
+            border-left-color: #22c55e;
+            color: #86efac;
+        }
+        .log-entry.info {
+            border-left-color: #3b82f6;
+            color: #93c5fd;
+        }
+        .devices {
+            margin: 20px 0;
+        }
+        .device-item {
+            background: #262626;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 6px;
+            border: 1px solid #404040;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 ShareFlow WebSocket 连接测试</h1>
+    
+    <div id="status" class="status disconnected">
+        状态: 未连接
+    </div>
+
+    <div>
+        <button id="connectBtn" onclick="connect()">连接</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>断开</button>
+        <button onclick="startDiscovery()">开始发现设备</button>
+        <button onclick="clearLog()">清空日志</button>
+    </div>
+
+    <div class="devices">
+        <h3>发现的设备:</h3>
+        <div id="devices"></div>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+        let ws = null;
+        const devices = new Map();
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(status, className) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = `状态: ${status}`;
+            statusDiv.className = `status ${className}`;
+        }
+
+        function updateButtons(connected) {
+            document.getElementById('connectBtn').disabled = connected;
+            document.getElementById('disconnectBtn').disabled = !connected;
+        }
+
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('已经连接', 'info');
+                return;
+            }
+
+            updateStatus('连接中...', 'connecting');
+            log('正在连接到 ws://127.0.0.1:4000', 'info');
+
+            ws = new WebSocket('ws://127.0.0.1:4000');
+
+            ws.onopen = () => {
+                log('✓ WebSocket 连接成功!', 'success');
+                updateStatus('已连接', 'connected');
+                updateButtons(true);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    log(`← 收到消息: ${msg.type}`, 'info');
+                    
+                    if (msg.type === 'deviceFound' && msg.device) {
+                        const device = msg.device;
+                        devices.set(device.id, device);
+                        updateDeviceList();
+                        log(`  发现设备: ${device.name} (${device.ip})`, 'success');
+                    }
+                } catch (e) {
+                    log(`解析消息失败: ${e.message}`, 'error');
+                }
+            };
+
+            ws.onerror = (error) => {
+                log('✗ WebSocket 错误', 'error');
+                console.error(error);
+            };
+
+            ws.onclose = () => {
+                log('WebSocket 连接已关闭', 'info');
+                updateStatus('未连接', 'disconnected');
+                updateButtons(false);
+                ws = null;
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                log('主动断开连接', 'info');
+            }
+        }
+
+        function send(message) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+                log(`→ 发送消息: ${message.type}`, 'info');
+            } else {
+                log('未连接，无法发送消息', 'error');
+            }
+        }
+
+        function startDiscovery() {
+            send({ type: 'startDiscovery' });
+            log('请求开始设备发现', 'info');
+        }
+
+        function updateDeviceList() {
+            const devicesDiv = document.getElementById('devices');
+            if (devices.size === 0) {
+                devicesDiv.innerHTML = '<p style="color: #6b7280;">暂无设备</p>';
+                return;
+            }
+
+            devicesDiv.innerHTML = '';
+            devices.forEach(device => {
+                const div = document.createElement('div');
+                div.className = 'device-item';
+                div.innerHTML = `
+                    <strong>${device.name}</strong><br>
+                    <small>ID: ${device.id} | IP: ${device.ip} | 类型: ${device.type}</small>
+                `;
+                devicesDiv.appendChild(div);
+            });
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            log('日志已清空', 'info');
+        }
+
+        // Auto-connect on load
+        window.onload = () => {
+            log('页面加载完成，准备测试连接', 'info');
+            updateDeviceList();
+        };
+    </script>
+</body>
+</html>
