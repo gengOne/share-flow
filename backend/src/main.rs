@@ -134,10 +134,16 @@ async fn main() -> Result<()> {
     // Active TCP connections storage
     let active_connections = Arc::new(Mutex::new(HashMap::<String, Arc<Mutex<TcpStream>>>::new()));
     
+    // Pending connection requests (addr -> (stream, device_info))
+    type PendingConnection = (TcpStream, Option<DeviceInfo>);
+    let pending_connections = Arc::new(Mutex::new(HashMap::<String, PendingConnection>::new()));
+    
     // Start TCP Listener for peer connections
     let listener = TcpListener::bind(format!("0.0.0.0:{}", udp_port)).await?;
     let active_connections_clone = Arc::clone(&active_connections);
+    let pending_connections_clone = Arc::clone(&pending_connections);
     let ws_server_for_tcp = Arc::clone(&ws_server);
+    let discovered_devices_for_tcp = Arc::clone(&discovered_devices);
     
     tokio::spawn(async move {
         loop {
@@ -145,8 +151,9 @@ async fn main() -> Result<()> {
                 Ok((mut stream, addr)) => {
                     println!("\n>>> 收到 TCP 连接来自: {}", addr);
                     
-                    let _ws_server_clone = Arc::clone(&ws_server_for_tcp);
-                    let connections = Arc::clone(&active_connections_clone);
+                    let ws_server_clone = Arc::clone(&ws_server_for_tcp);
+                    let pending_conns = Arc::clone(&pending_connections_clone);
+                    let devices = Arc::clone(&discovered_devices_for_tcp);
                     
                     tokio::spawn(async move {
                         // Read handshake message
@@ -154,26 +161,26 @@ async fn main() -> Result<()> {
                             Ok(Message::ConnectRequest) => {
                                 println!("  收到连接请求握手");
                                 
-                                // Send response
-                                if let Err(e) = Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: true }).await {
-                                    eprintln!("  发送握手响应失败: {}", e);
-                                    return;
-                                }
+                                // Find device info by IP
+                                let device_info = {
+                                    let devs = devices.lock().await;
+                                    devs.values()
+                                        .find(|(dev, _)| dev.ip == addr.ip().to_string())
+                                        .map(|(dev, _)| dev.clone())
+                                };
                                 
-                                println!("  ✓ 握手成功，连接已建立");
-                                
-                                // Store connection
-                                let stream_arc = Arc::new(Mutex::new(stream));
-                                connections.lock().await.insert(addr.to_string(), stream_arc.clone());
-                                
-                                // Notify frontend about incoming connection request
-                                // For now, we'll auto-accept
-                                // TODO: Implement proper connection request flow
-                                
-                                // Keep connection alive and handle messages
-                                loop {
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                                    // TODO: Handle incoming input events
+                                if let Some(device) = device_info {
+                                    println!("  来自设备: {} ({})", device.name, device.id);
+                                    
+                                    // Store pending connection
+                                    pending_conns.lock().await.insert(addr.to_string(), (stream, Some(device.clone())));
+                                    
+                                    // Notify frontend
+                                    println!("  通知前端显示连接请求弹窗");
+                                    ws_server_clone.broadcast(WsMessage::ConnectionRequest { device });
+                                } else {
+                                    println!("  ⚠ 未找到设备信息，自动拒绝");
+                                    let _ = Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: false }).await;
                                 }
                             }
                             Ok(msg) => {
@@ -423,13 +430,46 @@ async fn main() -> Result<()> {
                         }
                     }
                     WsMessage::CancelConnection => {
-                        println!("Frontend cancelled connection request");
+                        println!("\n>>> 前端取消了连接请求");
+                        // TODO: Close outgoing connection if any
                     }
                     WsMessage::AcceptConnection { target_device_id } => {
-                        println!("Frontend accepted connection from: {}", target_device_id);
-                        ws_server.broadcast(WsMessage::ConnectionEstablished { 
-                            device_id: target_device_id 
-                        });
+                        println!("\n>>> 前端接受了来自 {} 的连接", target_device_id);
+                        
+                        // Find pending connection by device ID
+                        let mut pending = pending_connections.lock().await;
+                        let pending_addr = pending.iter()
+                            .find(|(_, (_, dev))| dev.as_ref().map(|d| &d.id) == Some(&target_device_id))
+                            .map(|(addr, _)| addr.clone());
+                        
+                        if let Some(addr) = pending_addr {
+                            if let Some((mut stream, device)) = pending.remove(&addr) {
+                                println!("  找到待处理连接: {}", addr);
+                                
+                                // Send accept response
+                                match Transport::send_tcp(&mut stream, &Message::ConnectResponse { success: true }).await {
+                                    Ok(_) => {
+                                        println!("  ✓ 已发送接受响应");
+                                        
+                                        // Store active connection
+                                        let stream_arc = Arc::new(Mutex::new(stream));
+                                        active_connections.lock().await.insert(addr.clone(), stream_arc);
+                                        
+                                        // Notify frontend
+                                        ws_server.broadcast(WsMessage::ConnectionEstablished { 
+                                            device_id: target_device_id 
+                                        });
+                                        
+                                        println!("  ✓ 连接已建立");
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  ❌ 发送响应失败: {}", e);
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("  ❌ 未找到待处理的连接");
+                        }
                     }
                     WsMessage::Disconnect => {
                         println!("Frontend requested disconnect");
