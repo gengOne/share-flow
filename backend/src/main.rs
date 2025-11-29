@@ -365,14 +365,19 @@ async fn main() -> Result<()> {
                                         ).await {
                                             Ok(Ok(Message::ConnectResponse { success: true })) => {
                                                 println!("  ✓ 握手成功，连接已建立");
+                                                
+                                                // Store connection for sending input
+                                                let stream_arc = Arc::new(Mutex::new(stream));
+                                                // TODO: Store in active_connections with proper key
+                                                
                                                 ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
                                                     device_id: device_id_clone 
                                                 });
                                                 
-                                                // Keep connection alive
-                                                // TODO: Store connection and handle input forwarding
+                                                // Keep connection alive and handle any incoming messages
                                                 loop {
                                                     tokio::time::sleep(Duration::from_secs(1)).await;
+                                                    // TODO: Handle incoming messages if needed
                                                 }
                                             }
                                             Ok(Ok(Message::ConnectResponse { success: false })) => {
@@ -453,14 +458,84 @@ async fn main() -> Result<()> {
                                         
                                         // Store active connection
                                         let stream_arc = Arc::new(Mutex::new(stream));
-                                        active_connections.lock().await.insert(addr.clone(), stream_arc);
+                                        active_connections.lock().await.insert(addr.clone(), stream_arc.clone());
                                         
                                         // Notify frontend
                                         ws_server.broadcast(WsMessage::ConnectionEstablished { 
-                                            device_id: target_device_id 
+                                            device_id: target_device_id.clone() 
                                         });
                                         
-                                        println!("  ✓ 连接已建立");
+                                        println!("  ✓ 连接已建立，开始接收输入事件");
+                                        
+                                        // Start receiving input events
+                                        let ws_server_for_input = Arc::clone(&ws_server);
+                                        tokio::spawn(async move {
+                                            loop {
+                                                let mut stream_guard = stream_arc.lock().await;
+                                                match Transport::recv_tcp(&mut *stream_guard).await {
+                                                    Ok(msg) => {
+                                                        drop(stream_guard); // Release lock before processing
+                                                        
+                                                        match msg {
+                                                            Message::MouseMove { x, y } => {
+                                                                // Forward to frontend
+                                                                let event = InputEvent {
+                                                                    event_type: "mousemove".to_string(),
+                                                                    x: None,
+                                                                    y: None,
+                                                                    dx: Some(x as f64),
+                                                                    dy: Some(y as f64),
+                                                                    key: None,
+                                                                    timestamp: std::time::SystemTime::now()
+                                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                                        .unwrap()
+                                                                        .as_millis() as u64,
+                                                                };
+                                                                ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                            }
+                                                            Message::MouseClick { button, state } => {
+                                                                let event = InputEvent {
+                                                                    event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
+                                                                    x: None,
+                                                                    y: None,
+                                                                    dx: None,
+                                                                    dy: None,
+                                                                    key: Some(format!("button{}", button)),
+                                                                    timestamp: std::time::SystemTime::now()
+                                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                                        .unwrap()
+                                                                        .as_millis() as u64,
+                                                                };
+                                                                ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                            }
+                                                            Message::KeyPress { key, state } => {
+                                                                let event = InputEvent {
+                                                                    event_type: if state { "keydown" } else { "keyup" }.to_string(),
+                                                                    x: None,
+                                                                    y: None,
+                                                                    dx: None,
+                                                                    dy: None,
+                                                                    key: Some(char::from_u32(key).unwrap_or('?').to_string()),
+                                                                    timestamp: std::time::SystemTime::now()
+                                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                                        .unwrap()
+                                                                        .as_millis() as u64,
+                                                                };
+                                                                ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                            }
+                                                            _ => {
+                                                                println!("收到其他消息: {:?}", msg);
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        println!("接收输入事件失败: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            println!("输入事件接收循环结束");
+                                        });
                                     }
                                     Err(e) => {
                                         eprintln!("  ❌ 发送响应失败: {}", e);
@@ -485,9 +560,50 @@ async fn main() -> Result<()> {
                         
                         ws_server.broadcast(WsMessage::Disconnected);
                     }
-                    WsMessage::SendInput { event: _ } => {
-                        // TODO: Forward input to connected peer
-                        // println!("Received input event: {:?}", event);
+                    WsMessage::SendInput { event } => {
+                        // Forward input to connected peer via TCP
+                        let connections = active_connections.lock().await;
+                        
+                        if connections.is_empty() {
+                            // No active connection, ignore
+                            continue;
+                        }
+                        
+                        // Convert WebSocket InputEvent to Protocol Message
+                        let input_msg = match event.event_type.as_str() {
+                            "mousemove" => {
+                                Message::MouseMove {
+                                    x: event.dx.unwrap_or(0.0) as i32,
+                                    y: event.dy.unwrap_or(0.0) as i32,
+                                }
+                            }
+                            "mousedown" | "mouseup" => {
+                                // TODO: Parse button from event
+                                Message::MouseClick {
+                                    button: 0, // Left button for now
+                                    state: event.event_type == "mousedown",
+                                }
+                            }
+                            "keydown" | "keyup" => {
+                                if let Some(key) = event.key {
+                                    Message::KeyPress {
+                                        key: key.chars().next().unwrap_or('\0') as u32,
+                                        state: event.event_type == "keydown",
+                                    }
+                                } else {
+                                    continue;
+                                }
+                            }
+                            _ => continue,
+                        };
+                        
+                        // Send to all active connections
+                        for (addr, stream_arc) in connections.iter() {
+                            let mut stream = stream_arc.lock().await;
+                            if let Err(e) = Transport::send_tcp(&mut *stream, &input_msg).await {
+                                eprintln!("发送输入事件到 {} 失败: {}", addr, e);
+                            }
+                        }
                     }
                     _ => {}
                 }
