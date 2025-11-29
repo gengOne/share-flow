@@ -303,9 +303,35 @@ async fn main() -> Result<()> {
     // Input capture receiver (will be initialized when capture starts)
     let mut input_rx: Option<mpsc::UnboundedReceiver<CaptureControl>> = None;
 
+    // Mouse accumulation state
+    let mut accumulated_mouse_delta = (0.0f64, 0.0f64);
+    let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(10));
+    // Set missed tick behavior to skip to avoid burst of events if the loop is blocked
+    mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Main event loop
     loop {
         tokio::select! {
+            // Periodic flush of accumulated mouse events
+            _ = mouse_flush_interval.tick() => {
+                let dx_int = accumulated_mouse_delta.0 as i32;
+                let dy_int = accumulated_mouse_delta.1 as i32;
+
+                if dx_int != 0 || dy_int != 0 {
+                    let connections = active_connections.lock().await;
+                    if !connections.is_empty() {
+                        let msg = Message::MouseMove { x: dx_int, y: dy_int };
+                        for stream_arc in connections.values() {
+                            let mut stream = stream_arc.lock().await;
+                            // Ignore errors here, they will be handled in the read loop
+                            let _ = Transport::send_tcp(&mut stream, &msg).await;
+                        }
+                    }
+                    // Subtract the sent amount, keeping the fractional part
+                    accumulated_mouse_delta.0 -= dx_int as f64;
+                    accumulated_mouse_delta.1 -= dy_int as f64;
+                }
+            }
             // Handle UDP Discovery Events
             Some((msg, addr)) = rx.recv() => {
                 match msg {
@@ -783,66 +809,65 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         
-                        // Throttle mouse move events (skip if too frequent)
-                        use std::sync::Mutex as StdMutex;
-                        use std::sync::OnceLock;
-                        static LAST_MOUSE_TIME: OnceLock<StdMutex<std::time::Instant>> = OnceLock::new();
-                        
-                        let should_send = match event.event_type.as_str() {
+                        match event.event_type.as_str() {
                             "mousemove" => {
-                                let now = std::time::Instant::now();
-                                let time_lock = LAST_MOUSE_TIME.get_or_init(|| StdMutex::new(now));
-                                let mut last_time = time_lock.lock().unwrap();
-                                
-                                if now.duration_since(*last_time).as_millis() > 16 { // ~60 FPS
-                                    *last_time = now;
-                                    true
-                                } else {
-                                    false
+                                // Accumulate delta
+                                if let (Some(dx), Some(dy)) = (event.dx, event.dy) {
+                                    accumulated_mouse_delta.0 += dx;
+                                    accumulated_mouse_delta.1 += dy;
                                 }
                             }
-                            _ => true,
-                        };
-                        
-                        if !should_send {
-                            continue;
-                        }
-                        
-                        // Convert WebSocket InputEvent to Protocol Message
-                        let input_msg = match event.event_type.as_str() {
-                            "mousemove" => {
-                                Message::MouseMove {
-                                    x: event.dx.unwrap_or(0.0) as i32,
-                                    y: event.dy.unwrap_or(0.0) as i32,
-                                }
-                            }
-                            "mousedown" | "mouseup" => {
-                                // TODO: Parse button from event
-                                Message::MouseClick {
-                                    button: 0, // Left button for now
-                                    state: event.event_type == "mousedown",
-                                }
-                            }
-                            "keydown" | "keyup" => {
-                                if let Some(key) = event.key {
-                                    Message::KeyPress {
-                                        key: key.chars().next().unwrap_or('\0') as u32,
-                                        state: event.event_type == "keydown",
+                            _ => {
+                                // For other events (clicks, keys), send immediately
+                                let msg = match event.event_type.as_str() {
+                                    "mousedown" => {
+                                        let button = match event.key.as_deref() {
+                                            Some("button2") => 2, // Middle
+                                            Some("button1") => 1, // Right
+                                            _ => 0, // Left
+                                        };
+                                        Some(Message::MouseClick { button, state: true })
                                     }
-                                } else {
-                                    continue;
+                                    "mouseup" => {
+                                        let button = match event.key.as_deref() {
+                                            Some("button2") => 2, // Middle
+                                            Some("button1") => 1, // Right
+                                            _ => 0, // Left
+                                        };
+                                        Some(Message::MouseClick { button, state: false })
+                                    }
+                                    "keydown" => {
+                                        if let Some(key) = event.key {
+                                            Some(Message::KeyPress {
+                                                key: key.chars().next().unwrap_or('\0') as u32,
+                                                state: true,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    "keyup" => {
+                                        if let Some(key) = event.key {
+                                            Some(Message::KeyPress {
+                                                key: key.chars().next().unwrap_or('\0') as u32,
+                                                state: false,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    "wheel" => None, // TODO: Implement wheel support
+                                    _ => None,
+                                };
+
+                                if let Some(msg) = msg {
+                                    for stream_arc in connections.values() {
+                                        let mut stream = stream_arc.lock().await;
+                                        let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                    }
                                 }
                             }
-                            _ => continue,
                         };
-                        
-                        // Send to all active connections
-                        for (addr, stream_arc) in connections.iter() {
-                            let mut stream = stream_arc.lock().await;
-                            if let Err(e) = Transport::send_tcp(&mut *stream, &input_msg).await {
-                                eprintln!("发送输入事件到 {} 失败: {}", addr, e);
-                            }
-                        }
                     }
                     _ => {}
                 }
