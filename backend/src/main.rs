@@ -3,6 +3,7 @@ mod discovery;
 mod transport;
 mod websocket;
 mod input_capture;
+mod input_simulator;
 
 use anyhow::Result;
 use discovery::Discovery;
@@ -16,6 +17,7 @@ use tokio::time::Duration;
 use transport::Transport;
 use websocket::{DeviceInfo, InputEvent, WebSocketServer, WsMessage};
 use input_capture::{CaptureControl, InputCapture};
+use input_simulator::InputSimulator;
 
 fn get_local_ip() -> String {
     // Try to get all network interfaces
@@ -646,6 +648,9 @@ async fn main() -> Result<()> {
                                         
                                         println!("  ✓ 连接已建立，开始接收输入事件");
                                         
+                                        // Create input simulator
+                                        let simulator = InputSimulator::new();
+                                        
                                         // Start receiving input events
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         tokio::spawn(async move {
@@ -657,7 +662,10 @@ async fn main() -> Result<()> {
                                                         
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Forward to frontend
+                                                                // Execute input
+                                                                simulator.mouse_move(x, y);
+                                                                
+                                                                // Forward to frontend for visualization
                                                                 let event = InputEvent {
                                                                     event_type: "mousemove".to_string(),
                                                                     x: None,
@@ -673,6 +681,10 @@ async fn main() -> Result<()> {
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
                                                             Message::MouseClick { button, state } => {
+                                                                // Execute input
+                                                                simulator.mouse_click(button, state);
+                                                                
+                                                                // Forward to frontend for visualization
                                                                 let event = InputEvent {
                                                                     event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
                                                                     x: None,
@@ -688,6 +700,10 @@ async fn main() -> Result<()> {
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
                                                             Message::KeyPress { key, state } => {
+                                                                // Execute input
+                                                                simulator.key_press(key, state);
+                                                                
+                                                                // Forward to frontend for visualization
                                                                 let event = InputEvent {
                                                                     event_type: if state { "keydown" } else { "keyup" }.to_string(),
                                                                     x: None,
