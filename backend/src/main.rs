@@ -75,8 +75,18 @@ fn get_local_ip() -> String {
 async fn main() -> Result<()> {
     let udp_port = 8080;
     let ws_port = 4000;
-    let device_name = "RustService";
-    let device_id = "unique-id-123";
+    
+    // Generate unique device ID based on hostname and MAC address
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "Unknown".to_string());
+    
+    // Use hostname as device name
+    let device_name = hostname.clone();
+    
+    // Create unique ID from hostname (you can also use MAC address or UUID)
+    let device_id = format!("device-{}", hostname.replace(" ", "-").to_lowercase());
 
     println!("Starting ShareFlow Service");
     println!("  UDP Discovery: port {}", udp_port);
@@ -152,14 +162,10 @@ async fn main() -> Result<()> {
 
     // Get local IP address - prefer 192.168.x.x or 10.x.x.x
     let local_ip = get_local_ip();
-    
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "Unknown Device".to_string());
 
     println!("Local IP: {}", local_ip);
     println!("Hostname: {}", hostname);
+    println!("Device ID: {}", device_id);
 
     // Input capture receiver (will be initialized when capture starts)
     let mut input_rx: Option<mpsc::UnboundedReceiver<CaptureControl>> = None;
