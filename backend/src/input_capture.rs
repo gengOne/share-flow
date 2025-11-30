@@ -148,8 +148,8 @@ impl InputCapture {
                     EventType::ButtonPress(button) => {
                         let button_name = match button {
                             rdev::Button::Left => "button0",
-                            rdev::Button::Right => "button2",
-                            rdev::Button::Middle => "button1",
+                            rdev::Button::Right => "button1",
+                            rdev::Button::Middle => "button2",
                             _ => "button0",
                         };
                         (Some(InputEventData {
@@ -165,8 +165,8 @@ impl InputCapture {
                     EventType::ButtonRelease(button) => {
                         let button_name = match button {
                             rdev::Button::Left => "button0",
-                            rdev::Button::Right => "button2",
-                            rdev::Button::Middle => "button1",
+                            rdev::Button::Right => "button1",
+                            rdev::Button::Middle => "button2",
                             _ => "button0",
                         };
                         (Some(InputEventData {

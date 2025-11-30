@@ -826,16 +826,16 @@ async fn main() -> Result<()> {
                                 let msg = match event.event_type.as_str() {
                                     "mousedown" => {
                                         let button = match event.key.as_deref() {
-                                            Some("button2") => 2, // Middle
                                             Some("button1") => 1, // Right
+                                            Some("button2") => 2, // Middle
                                             _ => 0, // Left
                                         };
                                         Some(Message::MouseClick { button, state: true })
                                     }
                                     "mouseup" => {
                                         let button = match event.key.as_deref() {
-                                            Some("button2") => 2, // Middle
                                             Some("button1") => 1, // Right
+                                            Some("button2") => 2, // Middle
                                             _ => 0, // Left
                                         };
                                         Some(Message::MouseClick { button, state: false })
@@ -929,8 +929,8 @@ async fn main() -> Result<()> {
                                     if let Some(key) = input_event.key {
                                         let button = match key.as_str() {
                                             "button0" => 0, // Left
-                                            "button1" => 2, // Middle
-                                            "button2" => 1, // Right
+                                            "button1" => 1, // Right
+                                            "button2" => 2, // Middle
                                             _ => 0,
                                         };
                                         let state = input_event.event_type == "mousedown";
