@@ -695,29 +695,44 @@ async fn main() -> Result<()> {
                                                     break;
                                                 }
                                             }
+                                            // Channel closed (主控端断开)
+                                            println!("发送通道关闭，主控端已断开");
+                                            active_conns_clone.lock().await.remove(&addr_clone);
+                                            ws_clone.broadcast(WsMessage::Disconnected);
                                         });
                                         
                                         // Start receiving input events
                                         let ws_server_for_input = Arc::clone(&ws_server);
+                                        let active_conns_for_cleanup = Arc::clone(&active_connections);
+                                        let addr_for_cleanup = addr.clone();
                                         tokio::spawn(async move {
                                             // Channel for receiving messages
                                             let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(1000);
                                             
                                             // Spawn task to receive TCP messages
+                                            let ws_for_recv = Arc::clone(&ws_server_for_input);
+                                            let active_conns_recv = Arc::clone(&active_conns_for_cleanup);
+                                            let addr_recv = addr_for_cleanup.clone();
                                             tokio::spawn(async move {
                                                 loop {
                                                     match Transport::recv_tcp_split(&mut read_half).await {
                                                         Ok(msg) => {
                                                             if msg_tx.send(msg).await.is_err() {
+                                                                println!("消息通道已关闭，停止接收");
                                                                 break;
                                                             }
                                                         }
                                                         Err(e) => {
                                                             println!("接收输入事件失败: {}", e);
+                                                            // Clean up connection
+                                                            active_conns_recv.lock().await.remove(&addr_recv);
+                                                            // Notify frontend
+                                                            ws_for_recv.broadcast(WsMessage::Disconnected);
                                                             break;
                                                         }
                                                     }
                                                 }
+                                                println!("TCP 接收任务结束");
                                             });
                                             
                                             // Main processing loop - parallel execution for non-blocking
