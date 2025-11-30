@@ -685,10 +685,10 @@ async fn main() -> Result<()> {
                                         // Start receiving input events
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         tokio::spawn(async move {
-                                            // Mouse movement accumulator for smooth movement
-                                            let mut mouse_accumulator = (0.0f64, 0.0f64);
-                                            let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(8));
-                                            mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                            // Mouse movement accumulator removed to reduce lag
+                                            // let mut mouse_accumulator = (0.0f64, 0.0f64);
+                                            // let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(8));
+                                            // mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                                             
                                             // Channel for receiving messages
                                             let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(100);
@@ -716,28 +716,15 @@ async fn main() -> Result<()> {
                                             // Main processing loop
                                             loop {
                                                 tokio::select! {
-                                                    // Flush accumulated mouse movement
-                                                    _ = mouse_flush_interval.tick() => {
-                                                        let dx = mouse_accumulator.0 as i32;
-                                                        let dy = mouse_accumulator.1 as i32;
-                                                        
-                                                        if dx != 0 || dy != 0 {
-                                                            // Execute mouse movement (no logging for performance)
-                                                            simulator.mouse_move(dx, dy);
-                                                            
-                                                            // Subtract sent amount, keep fractional part
-                                                            mouse_accumulator.0 -= dx as f64;
-                                                            mouse_accumulator.1 -= dy as f64;
-                                                        }
-                                                    }
-                                                    
                                                     // Process incoming messages
                                                     Some(msg) = msg_rx.recv() => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Accumulate mouse movement (no logging for performance)
-                                                                mouse_accumulator.0 += x as f64;
-                                                                mouse_accumulator.1 += y as f64;
+                                                                // Execute mouse movement immediately (no buffering on slave side)
+                                                                // Master side already buffers to 10ms intervals
+                                                                if x != 0 || y != 0 {
+                                                                    simulator.mouse_move(x, y);
+                                                                }
                                                             }
                                                             Message::MouseClick { button, state } => {
                                                                 // Execute input immediately
@@ -910,19 +897,22 @@ async fn main() -> Result<()> {
                 match control_msg {
                     CaptureControl::InputEvent(input_event) => {
                         // Convert to WebSocket message and broadcast to frontend for visualization
-                        let ws_event = InputEvent {
-                            event_type: input_event.event_type.clone(),
-                            x: input_event.x,
-                            y: input_event.y,
-                            dx: input_event.dx,
-                            dy: input_event.dy,
-                            key: input_event.key.clone(),
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as u64,
-                        };
-                        ws_server.broadcast(WsMessage::LocalInput { event: ws_event });
+                        // Optimization: Skip mousemove events to prevent frontend crash due to high frequency
+                        if input_event.event_type != "mousemove" {
+                            let ws_event = InputEvent {
+                                event_type: input_event.event_type.clone(),
+                                x: input_event.x,
+                                y: input_event.y,
+                                dx: input_event.dx,
+                                dy: input_event.dy,
+                                key: input_event.key.clone(),
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64,
+                            };
+                            ws_server.broadcast(WsMessage::LocalInput { event: ws_event });
+                        }
                         
                         // Forward to connected peer via TCP
                         let connections = active_connections.lock().await;

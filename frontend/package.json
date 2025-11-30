@@ -1,5 +1,5 @@
 {
-  "name": "shareflow---局域网键鼠共享",
+  "name": "shareflow-lan-share",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -27,18 +27,24 @@
       {
         "from": "rust-service/target/release/rust-service.exe",
         "to": "rust-service.exe",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "icon.ico"
