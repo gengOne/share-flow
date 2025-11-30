@@ -958,7 +958,22 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 "keydown" | "keyup" => {
-                                    if let Some(key_str) = input_event.key {
+                                    if let Some(code) = input_event.key_code {
+                                        let state = input_event.event_type == "keydown";
+                                        // println!("[主控端] 捕获到按键: code={}, state={}", code, state);
+                                        
+                                        if code != 0 {
+                                            let msg = Message::KeyPress { key: code, state };
+                                            
+                                            for stream_arc in connections.values() {
+                                                let mut stream = stream_arc.lock().await;
+                                                if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
+                                                    eprintln!("发送按键失败: {}", e);
+                                                }
+                                            }
+                                        }
+                                    } else if let Some(key_str) = input_event.key {
+                                        // Fallback for legacy support or unmapped keys
                                         // Convert rdev key format (e.g., "KeyA") to character
                                         let key_code = if key_str.starts_with("Key") && key_str.len() == 4 {
                                             // Single letter key like "KeyA" -> 'A'
@@ -980,19 +995,15 @@ async fn main() -> Result<()> {
                                         
                                         if key_code != 0 {
                                             let state = input_event.event_type == "keydown";
-                                            println!("[主控端] 捕获到按键: key_str={}, key_code={}, state={}", key_str, key_code, state);
+                                            println!("[主控端] 捕获到按键(Fallback): key_str={}, key_code={}, state={}", key_str, key_code, state);
                                             let msg = Message::KeyPress { key: key_code, state };
                                             
                                             for stream_arc in connections.values() {
                                                 let mut stream = stream_arc.lock().await;
                                                 if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
                                                     eprintln!("发送按键失败: {}", e);
-                                                } else {
-                                                    println!("  ✓ 已发送到被控端");
                                                 }
                                             }
-                                        } else {
-                                            println!("[主控端] 未知按键: {}", key_str);
                                         }
                                     }
                                 }

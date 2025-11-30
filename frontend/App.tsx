@@ -116,6 +116,17 @@ const App: React.FC = () => {
             setConnectionStatus(ConnectionState.CONNECTED);
             setConnectedDevice(device);
             setAppMode(AppMode.HOSTING); // We become the Host (Sender)
+            
+            // 延迟启动输入捕获，确保状态更新完成
+            setTimeout(() => {
+                console.log('[App] 启动输入捕获...');
+                try {
+                    backend.startCapture();
+                    console.log('[App] 输入捕获已启动');
+                } catch (err) {
+                    console.error('[App] 启动输入捕获失败:', err);
+                }
+            }, 500);
         } else {
             console.log('[App] 连接失败');
             handleConnectFail("对方拒绝了连接请求");
