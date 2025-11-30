@@ -1039,6 +1039,14 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                                "longpress" => {
+                                    // Handle long-press events
+                                    if let Some(key) = input_event.key {
+                                        println!("[主控端] 检测到长按: key={}", key);
+                                        // Long-press is just informational, no need to send to peer
+                                        // The peer already received keydown and will handle it
+                                    }
+                                }
                                 "keydown" | "keyup" => {
                                     if let Some(code) = input_event.key_code {
                                         let state = input_event.event_type == "keydown";

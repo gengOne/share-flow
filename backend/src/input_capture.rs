@@ -40,6 +40,48 @@ impl InputCapture {
         let ctrl_pressed = Arc::new(AtomicBool::new(false));
         let alt_pressed = Arc::new(AtomicBool::new(false));
         
+        // Track key press times for long-press detection
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::Instant;
+        let key_press_times = Arc::new(Mutex::new(HashMap::<String, Instant>::new()));
+        
+        // Spawn long-press detection task
+        let tx_longpress = tx.clone();
+        let key_press_times_clone = Arc::clone(&key_press_times);
+        let should_stop_longpress = Arc::clone(&should_stop);
+        std::thread::spawn(move || {
+            const LONG_PRESS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+            const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+            
+            while !should_stop_longpress.load(Ordering::Relaxed) {
+                std::thread::sleep(CHECK_INTERVAL);
+                
+                let mut times = key_press_times_clone.lock().unwrap();
+                let now = Instant::now();
+                
+                // Check for long presses
+                let long_pressed: Vec<String> = times.iter()
+                    .filter(|(_, &press_time)| now.duration_since(press_time) >= LONG_PRESS_THRESHOLD)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                
+                // Send long-press events and remove from tracking
+                for key in long_pressed {
+                    times.remove(&key);
+                    let _ = tx_longpress.send(CaptureControl::InputEvent(InputEventData {
+                        event_type: "longpress".to_string(),
+                        key: Some(key),
+                        key_code: None,
+                        x: None,
+                        y: None,
+                        dx: None,
+                        dy: None,
+                    }));
+                }
+            }
+        });
+        
         // Spawn blocking thread for rdev grab
         std::thread::spawn(move || {
             let ctrl_pressed_clone = Arc::clone(&ctrl_pressed);
@@ -124,9 +166,17 @@ impl InputCapture {
                         }
                     }
                     EventType::KeyPress(key) => {
+                        let key_str = format!("{:?}", key);
+                        
+                        // Track key press time for long-press detection
+                        {
+                            let mut times = key_press_times.lock().unwrap();
+                            times.entry(key_str.clone()).or_insert_with(Instant::now);
+                        }
+                        
                         (Some(InputEventData {
                             event_type: "keydown".to_string(),
-                            key: Some(format!("{:?}", key)),
+                            key: Some(key_str),
                             key_code: Some(rdev_key_to_code(key)),
                             x: None,
                             y: None,
@@ -135,9 +185,17 @@ impl InputCapture {
                         }), true) // Block keyboard events
                     }
                     EventType::KeyRelease(key) => {
+                        let key_str = format!("{:?}", key);
+                        
+                        // Remove from long-press tracking
+                        {
+                            let mut times = key_press_times.lock().unwrap();
+                            times.remove(&key_str);
+                        }
+                        
                         (Some(InputEventData {
                             event_type: "keyup".to_string(),
-                            key: Some(format!("{:?}", key)),
+                            key: Some(key_str),
                             key_code: Some(rdev_key_to_code(key)),
                             x: None,
                             y: None,
@@ -152,6 +210,13 @@ impl InputCapture {
                             rdev::Button::Middle => "button2",
                             _ => "button0",
                         };
+                        
+                        // Track button press time for long-press detection
+                        {
+                            let mut times = key_press_times.lock().unwrap();
+                            times.entry(button_name.to_string()).or_insert_with(Instant::now);
+                        }
+                        
                         (Some(InputEventData {
                             event_type: "mousedown".to_string(),
                             key: Some(button_name.to_string()),
@@ -169,6 +234,13 @@ impl InputCapture {
                             rdev::Button::Middle => "button2",
                             _ => "button0",
                         };
+                        
+                        // Remove from long-press tracking
+                        {
+                            let mut times = key_press_times.lock().unwrap();
+                            times.remove(button_name);
+                        }
+                        
                         (Some(InputEventData {
                             event_type: "mouseup".to_string(),
                             key: Some(button_name.to_string()),
