@@ -704,138 +704,43 @@ async fn main() -> Result<()> {
                                             println!("[被控端] ✓ Disconnected 消息已发送");
                                         });
                                         
-                                        // Start receiving input events
+                                        // Start receiving input events - DIRECT MODE (zero-copy, zero-latency)
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         let active_conns_for_cleanup = Arc::clone(&active_connections);
                                         let addr_for_cleanup = addr.clone();
                                         tokio::spawn(async move {
-                                            // Channel for receiving messages - small buffer to reduce latency
-                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(10);
+                                            println!("[被控端] 输入接收循环启动 (直接模式)");
                                             
-                                            // Spawn task to receive TCP messages
-                                            let ws_for_recv = Arc::clone(&ws_server_for_input);
-                                            let active_conns_recv = Arc::clone(&active_conns_for_cleanup);
-                                            let addr_recv = addr_for_cleanup.clone();
-                                            tokio::spawn(async move {
-                                                loop {
-                                                    match Transport::recv_tcp_split(&mut read_half).await {
-                                                        Ok(msg) => {
-                                                            if msg_tx.send(msg).await.is_err() {
-                                                                println!("消息通道已关闭，停止接收");
-                                                                break;
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            println!("接收输入事件失败: {}", e);
-                                                            // Clean up connection
-                                                            active_conns_recv.lock().await.remove(&addr_recv);
-                                                            // Notify frontend
-                                                            ws_for_recv.broadcast(WsMessage::Disconnected);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                println!("TCP 接收任务结束");
-                                            });
+                                            // Mouse movement accumulator for smoothing
+                                            let mut mouse_accumulator = (0i32, 0i32);
                                             
-                                            // Main processing loop - parallel execution for non-blocking
                                             loop {
-                                                tokio::select! {
-                                                    // Process incoming messages
-                                                    Some(msg) = msg_rx.recv() => {
+                                                // Directly read from TCP - no intermediate buffer
+                                                match Transport::recv_tcp_split(&mut read_half).await {
+                                                    Ok(msg) => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Accumulate mouse movements to reduce jitter
-                                                                let mut total_x = x;
-                                                                let mut total_y = y;
+                                                                // Accumulate mouse movements
+                                                                mouse_accumulator.0 += x;
+                                                                mouse_accumulator.1 += y;
                                                                 
-                                                                // Try to receive more mouse moves without blocking
-                                                                while let Ok(next_msg) = msg_rx.try_recv() {
-                                                                    match next_msg {
-                                                                        Message::MouseMove { x: dx, y: dy } => {
-                                                                            total_x += dx;
-                                                                            total_y += dy;
-                                                                        }
-                                                                        other => {
-                                                                            // Not a mouse move, put it back by processing immediately
-                                                                            // We can't put it back, so we need to handle it
-                                                                            // This is a limitation, but mouse moves should be most frequent
-                                                                            // For now, execute accumulated movement first
-                                                                            if total_x != 0 || total_y != 0 {
-                                                                                simulator.mouse_move(total_x, total_y);
-                                                                                total_x = 0;
-                                                                                total_y = 0;
-                                                                            }
-                                                                            
-                                                                            // Handle the non-mouse-move message
-                                                                            match other {
-                                                                                Message::MouseClick { button, state } => {
-                                                                                    let sim = Arc::clone(&simulator);
-                                                                                    tokio::task::spawn_blocking(move || {
-                                                                                        sim.mouse_click(button, state);
-                                                                                    });
-                                                                                    
-                                                                                    let event = InputEvent {
-                                                                                        event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
-                                                                                        x: None,
-                                                                                        y: None,
-                                                                                        dx: None,
-                                                                                        dy: None,
-                                                                                        key: Some(format!("button{}", button)),
-                                                                                        timestamp: std::time::SystemTime::now()
-                                                                                            .duration_since(std::time::UNIX_EPOCH)
-                                                                                            .unwrap()
-                                                                                            .as_millis() as u64,
-                                                                                    };
-                                                                                    ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
-                                                                                }
-                                                                                Message::KeyPress { key, state } => {
-                                                                                    let sim = Arc::clone(&simulator);
-                                                                                    tokio::task::spawn_blocking(move || {
-                                                                                        sim.key_press(key, state);
-                                                                                    });
-                                                                                    
-                                                                                    let event = InputEvent {
-                                                                                        event_type: if state { "keydown" } else { "keyup" }.to_string(),
-                                                                                        x: None,
-                                                                                        y: None,
-                                                                                        dx: None,
-                                                                                        dy: None,
-                                                                                        key: Some(char::from_u32(key).unwrap_or('?').to_string()),
-                                                                                        timestamp: std::time::SystemTime::now()
-                                                                                            .duration_since(std::time::UNIX_EPOCH)
-                                                                                            .unwrap()
-                                                                                            .as_millis() as u64,
-                                                                                    };
-                                                                                    ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
-                                                                                }
-                                                                                Message::Disconnect => {
-                                                                                    println!("[被控端] 🔴 收到主控端断开消息");
-                                                                                    active_conns_for_cleanup.lock().await.remove(&addr_for_cleanup);
-                                                                                    ws_server_for_input.broadcast(WsMessage::Disconnected);
-                                                                                    println!("[被控端] ✓ 已通知前端断开");
-                                                                                    return; // Exit the task
-                                                                                }
-                                                                                _ => {}
-                                                                            }
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                }
-                                                                
-                                                                // Execute accumulated mouse movement
-                                                                if total_x != 0 || total_y != 0 {
-                                                                    simulator.mouse_move(total_x, total_y);
+                                                                // Execute immediately (Windows API is fast enough)
+                                                                if mouse_accumulator.0 != 0 || mouse_accumulator.1 != 0 {
+                                                                    simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                                    mouse_accumulator = (0, 0);
                                                                 }
                                                             }
                                                             Message::MouseClick { button, state } => {
-                                                                // Execute click in parallel to avoid blocking mouse movement
-                                                                let sim = Arc::clone(&simulator);
-                                                                tokio::task::spawn_blocking(move || {
-                                                                    sim.mouse_click(button, state);
-                                                                });
+                                                                // Flush any accumulated mouse movement first
+                                                                if mouse_accumulator.0 != 0 || mouse_accumulator.1 != 0 {
+                                                                    simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                                    mouse_accumulator = (0, 0);
+                                                                }
                                                                 
-                                                                // Forward to frontend for visualization (optional, can be disabled for performance)
+                                                                // Execute click immediately (synchronous for ordering)
+                                                                simulator.mouse_click(button, state);
+                                                                
+                                                                // Forward to frontend for visualization
                                                                 let event = InputEvent {
                                                                     event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
                                                                     x: None,
@@ -851,13 +756,16 @@ async fn main() -> Result<()> {
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
                                                             Message::KeyPress { key, state } => {
-                                                                // Execute keypress in parallel to avoid blocking mouse movement
-                                                                let sim = Arc::clone(&simulator);
-                                                                tokio::task::spawn_blocking(move || {
-                                                                    sim.key_press(key, state);
-                                                                });
+                                                                // Flush any accumulated mouse movement first
+                                                                if mouse_accumulator.0 != 0 || mouse_accumulator.1 != 0 {
+                                                                    simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                                    mouse_accumulator = (0, 0);
+                                                                }
                                                                 
-                                                                // Forward to frontend for visualization (optional, can be disabled for performance)
+                                                                // Execute keypress immediately (synchronous for ordering)
+                                                                simulator.key_press(key, state);
+                                                                
+                                                                // Forward to frontend for visualization
                                                                 let event = InputEvent {
                                                                     event_type: if state { "keydown" } else { "keyup" }.to_string(),
                                                                     x: None,
@@ -874,7 +782,6 @@ async fn main() -> Result<()> {
                                                             }
                                                             Message::Disconnect => {
                                                                 println!("[被控端] 🔴 收到主控端断开消息");
-                                                                // Clean up and notify frontend
                                                                 active_conns_for_cleanup.lock().await.remove(&addr_for_cleanup);
                                                                 ws_server_for_input.broadcast(WsMessage::Disconnected);
                                                                 println!("[被控端] ✓ 已通知前端断开");
@@ -885,14 +792,16 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                                     }
-                                                    
-                                                    else => break,
+                                                    Err(e) => {
+                                                        println!("[被控端] 接收失败: {}", e);
+                                                        active_conns_for_cleanup.lock().await.remove(&addr_for_cleanup);
+                                                        ws_server_for_input.broadcast(WsMessage::Disconnected);
+                                                        break;
+                                                    }
                                                 }
                                             }
                                             
-                                            println!("输入事件接收循环结束");
-                                            
-                                            // Notify frontend about disconnection
+                                            println!("[被控端] 输入接收循环结束");
                                             ws_server_for_input.broadcast(WsMessage::Disconnected);
                                         });
                                     }
