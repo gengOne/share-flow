@@ -17,6 +17,7 @@ impl Transport {
         buffer.extend_from_slice(&data);
         
         stream.write_all(&buffer).await?;
+        stream.flush().await?; // 立即刷新缓冲区，确保数据立即发送
         Ok(())
     }
 

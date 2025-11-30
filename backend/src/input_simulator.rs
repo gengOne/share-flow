@@ -1,4 +1,7 @@
-use rdev::{simulate, Button, EventType, Key};
+use rdev::{simulate, EventType, Key};
+
+#[cfg(not(windows))]
+use rdev::Button;
 
 pub struct InputSimulator;
 
@@ -78,23 +81,99 @@ impl InputSimulator {
     pub fn mouse_click(&self, button: u8, is_down: bool) {
         println!("[InputSimulator] 鼠标点击: button={}, down={}", button, is_down);
         
-        let rdev_button = match button {
-            0 => Button::Left,
-            1 => Button::Right,
-            2 => Button::Middle,
-            _ => Button::Left,
-        };
-
-        let event_type = if is_down {
-            EventType::ButtonPress(rdev_button)
-        } else {
-            EventType::ButtonRelease(rdev_button)
-        };
+        #[cfg(windows)]
+        {
+            use std::mem;
+            
+            #[repr(C)]
+            struct INPUT {
+                type_: u32,
+                union_: INPUT_UNION,
+            }
+            
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            union INPUT_UNION {
+                mi: MOUSEINPUT,
+            }
+            
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct MOUSEINPUT {
+                dx: i32,
+                dy: i32,
+                mouse_data: u32,
+                dw_flags: u32,
+                time: u32,
+                dw_extra_info: usize,
+            }
+            
+            const INPUT_MOUSE: u32 = 0;
+            const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+            const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+            const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+            const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+            const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
+            const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
+            
+            extern "system" {
+                fn SendInput(n_inputs: u32, p_inputs: *const INPUT, cb_size: i32) -> u32;
+            }
+            
+            let dw_flags = match (button, is_down) {
+                (0, true) => MOUSEEVENTF_LEFTDOWN,
+                (0, false) => MOUSEEVENTF_LEFTUP,
+                (1, true) => MOUSEEVENTF_RIGHTDOWN,
+                (1, false) => MOUSEEVENTF_RIGHTUP,
+                (2, true) => MOUSEEVENTF_MIDDLEDOWN,
+                (2, false) => MOUSEEVENTF_MIDDLEUP,
+                _ => MOUSEEVENTF_LEFTDOWN,
+            };
+            
+            unsafe {
+                let input = INPUT {
+                    type_: INPUT_MOUSE,
+                    union_: INPUT_UNION {
+                        mi: MOUSEINPUT {
+                            dx: 0,
+                            dy: 0,
+                            mouse_data: 0,
+                            dw_flags,
+                            time: 0,
+                            dw_extra_info: 0,
+                        },
+                    },
+                };
+                
+                let result = SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+                if result == 1 {
+                    println!("  ✓ 鼠标点击成功");
+                } else {
+                    eprintln!("  ✗ 鼠标点击失败");
+                }
+            }
+        }
         
-        if let Err(e) = simulate(&event_type) {
-            eprintln!("模拟鼠标点击失败: {:?}", e);
-        } else {
-            println!("  ✓ 鼠标点击成功");
+        #[cfg(not(windows))]
+        {
+            let rdev_button = match button {
+                0 => Button::Left,
+                1 => Button::Right,
+                2 => Button::Middle,
+                _ => Button::Left,
+            };
+
+            let event_type = if is_down {
+                EventType::ButtonPress(rdev_button)
+            } else {
+                EventType::ButtonRelease(rdev_button)
+            };
+            
+            if let Err(e) = simulate(&event_type) {
+                eprintln!("模拟鼠标点击失败: {:?}", e);
+            } else {
+                println!("  ✓ 鼠标点击成功");
+            }
         }
     }
 
