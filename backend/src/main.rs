@@ -709,8 +709,8 @@ async fn main() -> Result<()> {
                                         let active_conns_for_cleanup = Arc::clone(&active_connections);
                                         let addr_for_cleanup = addr.clone();
                                         tokio::spawn(async move {
-                                            // Channel for receiving messages
-                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(1000);
+                                            // Channel for receiving messages - small buffer to reduce latency
+                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(10);
                                             
                                             // Spawn task to receive TCP messages
                                             let ws_for_recv = Arc::clone(&ws_server_for_input);
@@ -745,10 +745,87 @@ async fn main() -> Result<()> {
                                                     Some(msg) = msg_rx.recv() => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Mouse movement: execute synchronously to maintain order
-                                                                // but it's fast enough (direct Windows API) that it won't block
-                                                                if x != 0 || y != 0 {
-                                                                    simulator.mouse_move(x, y);
+                                                                // Accumulate mouse movements to reduce jitter
+                                                                let mut total_x = x;
+                                                                let mut total_y = y;
+                                                                
+                                                                // Try to receive more mouse moves without blocking
+                                                                while let Ok(next_msg) = msg_rx.try_recv() {
+                                                                    match next_msg {
+                                                                        Message::MouseMove { x: dx, y: dy } => {
+                                                                            total_x += dx;
+                                                                            total_y += dy;
+                                                                        }
+                                                                        other => {
+                                                                            // Not a mouse move, put it back by processing immediately
+                                                                            // We can't put it back, so we need to handle it
+                                                                            // This is a limitation, but mouse moves should be most frequent
+                                                                            // For now, execute accumulated movement first
+                                                                            if total_x != 0 || total_y != 0 {
+                                                                                simulator.mouse_move(total_x, total_y);
+                                                                                total_x = 0;
+                                                                                total_y = 0;
+                                                                            }
+                                                                            
+                                                                            // Handle the non-mouse-move message
+                                                                            match other {
+                                                                                Message::MouseClick { button, state } => {
+                                                                                    let sim = Arc::clone(&simulator);
+                                                                                    tokio::task::spawn_blocking(move || {
+                                                                                        sim.mouse_click(button, state);
+                                                                                    });
+                                                                                    
+                                                                                    let event = InputEvent {
+                                                                                        event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
+                                                                                        x: None,
+                                                                                        y: None,
+                                                                                        dx: None,
+                                                                                        dy: None,
+                                                                                        key: Some(format!("button{}", button)),
+                                                                                        timestamp: std::time::SystemTime::now()
+                                                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                                                            .unwrap()
+                                                                                            .as_millis() as u64,
+                                                                                    };
+                                                                                    ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                                                }
+                                                                                Message::KeyPress { key, state } => {
+                                                                                    let sim = Arc::clone(&simulator);
+                                                                                    tokio::task::spawn_blocking(move || {
+                                                                                        sim.key_press(key, state);
+                                                                                    });
+                                                                                    
+                                                                                    let event = InputEvent {
+                                                                                        event_type: if state { "keydown" } else { "keyup" }.to_string(),
+                                                                                        x: None,
+                                                                                        y: None,
+                                                                                        dx: None,
+                                                                                        dy: None,
+                                                                                        key: Some(char::from_u32(key).unwrap_or('?').to_string()),
+                                                                                        timestamp: std::time::SystemTime::now()
+                                                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                                                            .unwrap()
+                                                                                            .as_millis() as u64,
+                                                                                    };
+                                                                                    ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
+                                                                                }
+                                                                                Message::Disconnect => {
+                                                                                    println!("[被控端] 🔴 收到主控端断开消息");
+                                                                                    active_conns_for_cleanup.lock().await.remove(&addr_for_cleanup);
+                                                                                    ws_server_for_input.broadcast(WsMessage::Disconnected);
+                                                                                    println!("[被控端] ✓ 已通知前端断开");
+                                                                                    return; // Exit the task
+                                                                                }
+                                                                                _ => {}
+                                                                            }
+                                                                            break;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                
+                                                                // Execute accumulated mouse movement
+                                                                if total_x != 0 || total_y != 0 {
+                                                                    simulator.mouse_move(total_x, total_y);
                                                                 }
                                                             }
                                                             Message::MouseClick { button, state } => {
