@@ -302,35 +302,17 @@ async fn main() -> Result<()> {
     // Input capture receiver (will be initialized when capture starts)
     let mut input_rx: Option<mpsc::UnboundedReceiver<CaptureControl>> = None;
 
-    // Mouse accumulation state
-    let mut accumulated_mouse_delta = (0.0f64, 0.0f64);
-    let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(1));
-    // Set missed tick behavior to skip to avoid burst of events if the loop is blocked
-    mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Mouse accumulation state removed for immediate transmission
+    // let mut accumulated_mouse_delta = (0.0f64, 0.0f64);
+    // let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(1));
+    // mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Main event loop
     loop {
         tokio::select! {
             // Periodic flush of accumulated mouse events
-            _ = mouse_flush_interval.tick() => {
-                let dx_int = accumulated_mouse_delta.0 as i32;
-                let dy_int = accumulated_mouse_delta.1 as i32;
-
-                if dx_int != 0 || dy_int != 0 {
-                    let connections = active_connections.lock().await;
-                    if !connections.is_empty() {
-                        let msg = Message::MouseMove { x: dx_int, y: dy_int };
-                        for stream_arc in connections.values() {
-                            let mut stream = stream_arc.lock().await;
-                            // Ignore errors here, they will be handled in the read loop
-                            let _ = Transport::send_tcp(&mut stream, &msg).await;
-                        }
-                    }
-                    // Subtract the sent amount, keeping the fractional part
-                    accumulated_mouse_delta.0 -= dx_int as f64;
-                    accumulated_mouse_delta.1 -= dy_int as f64;
-                }
-            }
+            // Periodic flush removed - sending immediately
+            // _ = mouse_flush_interval.tick() => { ... }
             // Handle UDP Discovery Events
             Some((msg, addr)) = rx.recv() => {
                 match msg {
@@ -919,10 +901,19 @@ async fn main() -> Result<()> {
                         if !connections.is_empty() {
                             match input_event.event_type.as_str() {
                                 "mousemove" => {
-                                    // Accumulate mouse delta from Rust capture
+                                    // Send mouse move immediately (no accumulation)
                                     if let (Some(dx), Some(dy)) = (input_event.dx, input_event.dy) {
-                                        accumulated_mouse_delta.0 += dx;
-                                        accumulated_mouse_delta.1 += dy;
+                                        let dx_int = dx as i32;
+                                        let dy_int = dy as i32;
+                                        
+                                        if dx_int != 0 || dy_int != 0 {
+                                            let msg = Message::MouseMove { x: dx_int, y: dy_int };
+                                            for stream_arc in connections.values() {
+                                                let mut stream = stream_arc.lock().await;
+                                                // Ignore errors here, they will be handled in the read loop
+                                                let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                            }
+                                        }
                                     }
                                 }
                                 "mousedown" | "mouseup" => {
