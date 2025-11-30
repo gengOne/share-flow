@@ -687,18 +687,21 @@ async fn main() -> Result<()> {
                                         let addr_clone = addr.clone();
                                         let ws_clone = Arc::clone(&ws_server);
                                         tokio::spawn(async move {
+                                            println!("[被控端] 发送任务已启动");
                                             while let Some(msg) = msg_rx_send.recv().await {
                                                 if let Err(e) = Transport::send_tcp_split(&mut write_half, &msg).await {
-                                                    eprintln!("发送失败: {}", e);
+                                                    eprintln!("[被控端] 发送失败: {}", e);
                                                     active_conns_clone.lock().await.remove(&addr_clone);
                                                     ws_clone.broadcast(WsMessage::Disconnected);
                                                     break;
                                                 }
                                             }
                                             // Channel closed (主控端断开)
-                                            println!("发送通道关闭，主控端已断开");
+                                            println!("[被控端] ⚠️ 发送通道关闭，主控端已断开");
                                             active_conns_clone.lock().await.remove(&addr_clone);
+                                            println!("[被控端] 正在广播 Disconnected 消息到前端...");
                                             ws_clone.broadcast(WsMessage::Disconnected);
+                                            println!("[被控端] ✓ Disconnected 消息已发送");
                                         });
                                         
                                         // Start receiving input events
@@ -1050,8 +1053,10 @@ async fn main() -> Result<()> {
                         // Close all active connections (this will notify remote peers)
                         let mut connections = active_connections.lock().await;
                         let conn_count = connections.len();
+                        println!("  准备关闭 {} 个连接...", conn_count);
                         connections.clear(); // Dropping senders will close the channels
-                        println!("  已关闭 {} 个连接", conn_count);
+                        drop(connections); // 显式释放锁
+                        println!("  ✓ 已关闭所有连接，channel senders 已 drop");
                         
                         // Clear pending connections
                         pending_connections.lock().await.clear();
