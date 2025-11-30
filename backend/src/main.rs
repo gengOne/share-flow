@@ -133,8 +133,9 @@ async fn main() -> Result<()> {
     println!("\n>>> 启动广播，消息内容: {:?}", broadcast_msg);
     discovery.start_broadcast(broadcast_msg);
 
-    // Active TCP connections storage
-    let active_connections = Arc::new(Mutex::new(HashMap::<String, Arc<Mutex<TcpStream>>>::new()));
+    // Active TCP connections storage - use channel for lock-free sending
+    type MessageSender = mpsc::UnboundedSender<Message>;
+    let active_connections = Arc::new(Mutex::new(HashMap::<String, MessageSender>::new()));
     
     // Pending connection requests (addr -> (stream, device_info, timestamp))
     type PendingConnection = (TcpStream, Option<DeviceInfo>, std::time::Instant);
@@ -493,24 +494,40 @@ async fn main() -> Result<()> {
                                                 // Clear outgoing request
                                                 *outgoing_req.lock().await = None;
                                                 
-                                                // Store connection for sending input
-                                                let stream_arc = Arc::new(Mutex::new(stream));
+                                                // Create channel for lock-free sending
+                                                let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
                                                 let conn_key = format!("{}:{}", target_ip, 8080);
-                                                active_conns.lock().await.insert(conn_key.clone(), stream_arc.clone());
+                                                active_conns.lock().await.insert(conn_key.clone(), msg_tx);
                                                 println!("  连接已存储: {}", conn_key);
                                                 
                                                 ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
                                                     device_id: device_id_clone.clone()
                                                 });
                                                 
+                                                // Split stream for concurrent read/write
+                                                let (mut read_half, mut write_half) = tokio::io::split(stream);
+                                                
+                                                // Spawn dedicated sender task
+                                                let active_conns_clone = Arc::clone(&active_conns);
+                                                let conn_key_clone = conn_key.clone();
+                                                let ws_clone = Arc::clone(&ws_server_clone);
+                                                tokio::spawn(async move {
+                                                    while let Some(msg) = msg_rx.recv().await {
+                                                        if let Err(e) = Transport::send_tcp_split(&mut write_half, &msg).await {
+                                                            eprintln!("发送失败: {}", e);
+                                                            active_conns_clone.lock().await.remove(&conn_key_clone);
+                                                            ws_clone.broadcast(WsMessage::Disconnected);
+                                                            break;
+                                                        }
+                                                    }
+                                                });
+                                                
                                                 // Keep connection alive and handle any incoming messages
                                                 loop {
-                                                    let mut stream_guard = stream_arc.lock().await;
-                                                    
                                                     // Try to receive with timeout
                                                     match tokio::time::timeout(
                                                         Duration::from_secs(1),
-                                                        Transport::recv_tcp(&mut *stream_guard)
+                                                        Transport::recv_tcp_split(&mut read_half)
                                                     ).await {
                                                         Ok(Ok(msg)) => {
                                                             println!("收到对方消息: {:?}", msg);
@@ -519,14 +536,12 @@ async fn main() -> Result<()> {
                                                         Ok(Err(e)) => {
                                                             println!("连接断开: {}", e);
                                                             // Remove from active connections
-                                                            drop(stream_guard);
                                                             active_conns.lock().await.remove(&conn_key);
                                                             ws_server_clone.broadcast(WsMessage::Disconnected);
                                                             break;
                                                         }
                                                         Err(_) => {
                                                             // Timeout, continue
-                                                            drop(stream_guard);
                                                         }
                                                     }
                                                 }
@@ -650,9 +665,9 @@ async fn main() -> Result<()> {
                                     Ok(_) => {
                                         println!("  ✓ 已发送接受响应");
                                         
-                                        // Store active connection
-                                        let stream_arc = Arc::new(Mutex::new(stream));
-                                        active_connections.lock().await.insert(addr.clone(), stream_arc.clone());
+                                        // Create channel for lock-free sending
+                                        let (msg_tx_send, mut msg_rx_send) = mpsc::unbounded_channel::<Message>();
+                                        active_connections.lock().await.insert(addr.clone(), msg_tx_send);
                                         
                                         // Notify frontend
                                         ws_server.broadcast(WsMessage::ConnectionEstablished { 
@@ -664,25 +679,35 @@ async fn main() -> Result<()> {
                                         // Create input simulator
                                         let simulator = Arc::new(InputSimulator::new());
                                         
+                                        // Split stream for concurrent read/write
+                                        let (mut read_half, mut write_half) = tokio::io::split(stream);
+                                        
+                                        // Spawn dedicated sender task
+                                        let active_conns_clone = Arc::clone(&active_connections);
+                                        let addr_clone = addr.clone();
+                                        let ws_clone = Arc::clone(&ws_server);
+                                        tokio::spawn(async move {
+                                            while let Some(msg) = msg_rx_send.recv().await {
+                                                if let Err(e) = Transport::send_tcp_split(&mut write_half, &msg).await {
+                                                    eprintln!("发送失败: {}", e);
+                                                    active_conns_clone.lock().await.remove(&addr_clone);
+                                                    ws_clone.broadcast(WsMessage::Disconnected);
+                                                    break;
+                                                }
+                                            }
+                                        });
+                                        
                                         // Start receiving input events
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         tokio::spawn(async move {
-                                            // Mouse movement accumulator removed to reduce lag
-                                            // let mut mouse_accumulator = (0.0f64, 0.0f64);
-                                            // let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(8));
-                                            // mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                                            
                                             // Channel for receiving messages
-                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(100);
+                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(1000);
                                             
                                             // Spawn task to receive TCP messages
-                                            let stream_arc_clone = Arc::clone(&stream_arc);
                                             tokio::spawn(async move {
                                                 loop {
-                                                    let mut stream_guard = stream_arc_clone.lock().await;
-                                                    match Transport::recv_tcp(&mut *stream_guard).await {
+                                                    match Transport::recv_tcp_split(&mut read_half).await {
                                                         Ok(msg) => {
-                                                            drop(stream_guard);
                                                             if msg_tx.send(msg).await.is_err() {
                                                                 break;
                                                             }
@@ -802,7 +827,7 @@ async fn main() -> Result<()> {
                         println!("  ✓ 断开完成");
                     }
                     WsMessage::SendInput { event } => {
-                        // Forward input to connected peer via TCP
+                        // Forward input to connected peer via TCP (lock-free)
                         let connections = active_connections.lock().await;
                         
                         if connections.is_empty() {
@@ -819,10 +844,8 @@ async fn main() -> Result<()> {
                                     
                                     if dx_int != 0 || dy_int != 0 {
                                         let msg = Message::MouseMove { x: dx_int, y: dy_int };
-                                        for stream_arc in connections.values() {
-                                            let mut stream = stream_arc.lock().await;
-                                            // Ignore errors here, they will be handled in the read loop
-                                            let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                        for sender in connections.values() {
+                                            let _ = sender.send(msg.clone());
                                         }
                                     }
                                 }
@@ -871,9 +894,8 @@ async fn main() -> Result<()> {
                                 };
 
                                 if let Some(msg) = msg {
-                                    for stream_arc in connections.values() {
-                                        let mut stream = stream_arc.lock().await;
-                                        let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                    for sender in connections.values() {
+                                        let _ = sender.send(msg.clone());
                                     }
                                 }
                             }
@@ -923,10 +945,8 @@ async fn main() -> Result<()> {
                                         
                                         if dx_int != 0 || dy_int != 0 {
                                             let msg = Message::MouseMove { x: dx_int, y: dy_int };
-                                            for stream_arc in connections.values() {
-                                                let mut stream = stream_arc.lock().await;
-                                                // Ignore errors here, they will be handled in the read loop
-                                                let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                            for sender in connections.values() {
+                                                let _ = sender.send(msg.clone());
                                             }
                                         }
                                     }
@@ -943,11 +963,8 @@ async fn main() -> Result<()> {
                                         println!("[主控端] 捕获到鼠标点击: button={}, state={}", button, state);
                                         let msg = Message::MouseClick { button, state };
                                         
-                                        for stream_arc in connections.values() {
-                                            let mut stream = stream_arc.lock().await;
-                                            if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
-                                                eprintln!("发送鼠标点击失败: {}", e);
-                                            } else {
+                                        for sender in connections.values() {
+                                            if sender.send(msg.clone()).is_ok() {
                                                 println!("  ✓ 已发送到被控端");
                                             }
                                         }
@@ -961,11 +978,8 @@ async fn main() -> Result<()> {
                                         if code != 0 {
                                             let msg = Message::KeyPress { key: code, state };
                                             
-                                            for stream_arc in connections.values() {
-                                                let mut stream = stream_arc.lock().await;
-                                                if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
-                                                    eprintln!("发送按键失败: {}", e);
-                                                }
+                                            for sender in connections.values() {
+                                                let _ = sender.send(msg.clone());
                                             }
                                         }
                                     } else if let Some(key_str) = input_event.key {
@@ -994,11 +1008,8 @@ async fn main() -> Result<()> {
                                             println!("[主控端] 捕获到按键(Fallback): key_str={}, key_code={}, state={}", key_str, key_code, state);
                                             let msg = Message::KeyPress { key: key_code, state };
                                             
-                                            for stream_arc in connections.values() {
-                                                let mut stream = stream_arc.lock().await;
-                                                if let Err(e) = Transport::send_tcp(&mut stream, &msg).await {
-                                                    eprintln!("发送按键失败: {}", e);
-                                                }
+                                            for sender in connections.values() {
+                                                let _ = sender.send(msg.clone());
                                             }
                                         }
                                     }

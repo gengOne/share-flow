@@ -38,4 +38,30 @@ impl Transport {
         socket.send_to(&data, addr).await?;
         Ok(())
     }
+
+    // Split stream versions for concurrent read/write
+    pub async fn send_tcp_split<W: AsyncWriteExt + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
+        let data = bincode::serialize(message)?;
+        let len = data.len() as u32;
+        
+        let mut buffer = Vec::with_capacity(4 + data.len());
+        buffer.extend_from_slice(&len.to_be_bytes());
+        buffer.extend_from_slice(&data);
+        
+        writer.write_all(&buffer).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn recv_tcp_split<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Message> {
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        
+        let mut data = vec![0u8; len];
+        reader.read_exact(&mut data).await?;
+        
+        let message = bincode::deserialize(&data)?;
+        Ok(message)
+    }
 }
