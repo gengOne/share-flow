@@ -695,22 +695,25 @@ async fn main() -> Result<()> {
                                                 }
                                             });
                                             
-                                            // Main processing loop
+                                            // Main processing loop - parallel execution for non-blocking
                                             loop {
                                                 tokio::select! {
                                                     // Process incoming messages
                                                     Some(msg) = msg_rx.recv() => {
                                                         match msg {
                                                             Message::MouseMove { x, y } => {
-                                                                // Execute mouse movement immediately (no buffering on slave side)
-                                                                // Master side already buffers to 10ms intervals
+                                                                // Mouse movement: execute synchronously to maintain order
+                                                                // but it's fast enough (direct Windows API) that it won't block
                                                                 if x != 0 || y != 0 {
                                                                     simulator.mouse_move(x, y);
                                                                 }
                                                             }
                                                             Message::MouseClick { button, state } => {
-                                                                // Execute input immediately
-                                                                simulator.mouse_click(button, state);
+                                                                // Execute click in parallel to avoid blocking mouse movement
+                                                                let sim = Arc::clone(&simulator);
+                                                                tokio::task::spawn_blocking(move || {
+                                                                    sim.mouse_click(button, state);
+                                                                });
                                                                 
                                                                 // Forward to frontend for visualization (optional, can be disabled for performance)
                                                                 let event = InputEvent {
@@ -728,8 +731,11 @@ async fn main() -> Result<()> {
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
                                                             Message::KeyPress { key, state } => {
-                                                                // Execute input immediately
-                                                                simulator.key_press(key, state);
+                                                                // Execute keypress in parallel to avoid blocking mouse movement
+                                                                let sim = Arc::clone(&simulator);
+                                                                tokio::task::spawn_blocking(move || {
+                                                                    sim.key_press(key, state);
+                                                                });
                                                                 
                                                                 // Forward to frontend for visualization (optional, can be disabled for performance)
                                                                 let event = InputEvent {

@@ -5,6 +5,10 @@ use rdev::Button;
 
 pub struct InputSimulator;
 
+// InputSimulator 是无状态的，可以安全地在多线程中使用
+unsafe impl Send for InputSimulator {}
+unsafe impl Sync for InputSimulator {}
+
 impl InputSimulator {
     pub fn new() -> Self {
         Self
