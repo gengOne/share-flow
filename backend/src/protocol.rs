@@ -29,4 +29,6 @@ pub enum Message {
     ConnectResponse {
         success: bool,
     },
+    /// Notify peer that we are disconnecting
+    Disconnect,
 }

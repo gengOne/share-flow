@@ -795,6 +795,14 @@ async fn main() -> Result<()> {
                                                                 };
                                                                 ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                             }
+                                                            Message::Disconnect => {
+                                                                println!("[被控端] 🔴 收到主控端断开消息");
+                                                                // Clean up and notify frontend
+                                                                active_conns_for_cleanup.lock().await.remove(&addr_for_cleanup);
+                                                                ws_server_for_input.broadcast(WsMessage::Disconnected);
+                                                                println!("[被控端] ✓ 已通知前端断开");
+                                                                break;
+                                                            }
                                                             _ => {
                                                                 println!("收到其他消息: {:?}", msg);
                                                             }
@@ -1051,12 +1059,23 @@ async fn main() -> Result<()> {
                         }
                         
                         // Close all active connections (this will notify remote peers)
-                        let mut connections = active_connections.lock().await;
+                        let connections = active_connections.lock().await;
                         let conn_count = connections.len();
                         println!("  准备关闭 {} 个连接...", conn_count);
-                        connections.clear(); // Dropping senders will close the channels
-                        drop(connections); // 显式释放锁
-                        println!("  ✓ 已关闭所有连接，channel senders 已 drop");
+                        
+                        // Send disconnect message to all peers
+                        for (addr, sender) in connections.iter() {
+                            println!("  发送断开消息到: {}", addr);
+                            let _ = sender.send(Message::Disconnect);
+                        }
+                        drop(connections);
+                        
+                        // Small delay to ensure message is sent
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        
+                        // Now clear connections
+                        active_connections.lock().await.clear();
+                        println!("  ✓ 已关闭所有连接");
                         
                         // Clear pending connections
                         pending_connections.lock().await.clear();
