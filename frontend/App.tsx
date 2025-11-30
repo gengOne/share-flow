@@ -48,9 +48,6 @@ const App: React.FC = () => {
       setAppMode(AppMode.IDLE);
       setConnectedDevice(null);
       setPendingDeviceId(null);
-      if (document.pointerLockElement) {
-        document.exitPointerLock();
-      }
     };
 
     const handleIncomingRequest = (device: Device) => {
@@ -170,9 +167,6 @@ const App: React.FC = () => {
     if (!connectedDevice) return;
     setAppMode(AppMode.HOSTING);
     backend.startCapture();
-    setTimeout(() => {
-        captureRef.current?.requestPointerLock();
-    }, 100);
   };
 
   const disconnect = () => {

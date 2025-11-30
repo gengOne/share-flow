@@ -89,15 +89,24 @@ impl InputCapture {
                 // Convert event to our format and decide whether to block
                 let (input_event, should_block) = match event.event_type {
                     EventType::MouseMove { x, y } => {
-                        // Calculate delta from previous position
+                        // Hijack mode: Block mouse movement but capture deltas
                         let mut last_pos = last_mouse_pos_clone.lock().unwrap();
-                        let (dx, dy) = if let Some((last_x, last_y)) = *last_pos {
-                            (x - last_x, y - last_y)
-                        } else {
-                            (0.0, 0.0)
-                        };
-                        *last_pos = Some((x, y));
-                        drop(last_pos);
+                        
+                        // Initialize anchor position if not set
+                        if last_pos.is_none() {
+                            *last_pos = Some((x, y));
+                        }
+                        
+                        let (anchor_x, anchor_y) = last_pos.unwrap();
+                        
+                        // Calculate delta relative to the ANCHOR position (since cursor is frozen)
+                        let dx = x - anchor_x;
+                        let dy = y - anchor_y;
+                        
+                        // Note: We do NOT update last_pos because we are blocking the event,
+                        // so the cursor stays at anchor_x, anchor_y.
+                        // The OS calculates the new 'x, y' based on the current cursor position (anchor) + movement.
+                        // So 'x - anchor' is the true delta.
                         
                         // Only send if there's actual movement
                         if dx != 0.0 || dy != 0.0 {
@@ -109,9 +118,9 @@ impl InputCapture {
                                 y: None,
                                 dx: Some(dx),
                                 dy: Some(dy),
-                            }), false) // Don't block mouse move
+                            }), true) // BLOCK mouse move (Hijack)
                         } else {
-                            (None, false)
+                            (None, true) // BLOCK even if no movement
                         }
                     }
                     EventType::KeyPress(key) => {
