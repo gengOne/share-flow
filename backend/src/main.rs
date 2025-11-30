@@ -13,7 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::Duration;
+// use tokio::time::Duration;
 use transport::Transport;
 use websocket::{DeviceInfo, InputEvent, WebSocketServer, WsMessage};
 use input_capture::{CaptureControl, InputCapture};
@@ -806,10 +806,19 @@ async fn main() -> Result<()> {
                         
                         match event.event_type.as_str() {
                             "mousemove" => {
-                                // Accumulate delta
+                                // Send mouse move immediately (no accumulation)
                                 if let (Some(dx), Some(dy)) = (event.dx, event.dy) {
-                                    accumulated_mouse_delta.0 += dx;
-                                    accumulated_mouse_delta.1 += dy;
+                                    let dx_int = dx as i32;
+                                    let dy_int = dy as i32;
+                                    
+                                    if dx_int != 0 || dy_int != 0 {
+                                        let msg = Message::MouseMove { x: dx_int, y: dy_int };
+                                        for stream_arc in connections.values() {
+                                            let mut stream = stream_arc.lock().await;
+                                            // Ignore errors here, they will be handled in the read loop
+                                            let _ = Transport::send_tcp(&mut stream, &msg).await;
+                                        }
+                                    }
                                 }
                             }
                             _ => {
