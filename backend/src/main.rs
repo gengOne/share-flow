@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
 
     // Mouse accumulation state
     let mut accumulated_mouse_delta = (0.0f64, 0.0f64);
-    let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(10));
+    let mut mouse_flush_interval = tokio::time::interval(Duration::from_millis(1));
     // Set missed tick behavior to skip to avoid burst of events if the loop is blocked
     mouse_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 

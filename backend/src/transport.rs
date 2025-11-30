@@ -9,8 +9,14 @@ impl Transport {
     pub async fn send_tcp(stream: &mut TcpStream, message: &Message) -> Result<()> {
         let data = bincode::serialize(message)?;
         let len = data.len() as u32;
-        stream.write_all(&len.to_be_bytes()).await?;
-        stream.write_all(&data).await?;
+        
+        // Coalesce writes: Create a single buffer with length prefix + data
+        // This ensures the OS sends the packet immediately with TCP_NODELAY
+        let mut buffer = Vec::with_capacity(4 + data.len());
+        buffer.extend_from_slice(&len.to_be_bytes());
+        buffer.extend_from_slice(&data);
+        
+        stream.write_all(&buffer).await?;
         Ok(())
     }
 
