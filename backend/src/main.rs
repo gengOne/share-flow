@@ -1032,8 +1032,18 @@ async fn main() -> Result<()> {
                             *capturing = false;
                         }
                         
+                        // Close all active connections (this will notify remote peers)
+                        let mut connections = active_connections.lock().await;
+                        let conn_count = connections.len();
+                        connections.clear(); // Dropping senders will close the channels
+                        println!("  已关闭 {} 个连接", conn_count);
+                        
+                        // Clear pending connections
+                        pending_connections.lock().await.clear();
+                        
                         // Notify frontend to disconnect
                         ws_server.broadcast(WsMessage::Disconnected);
+                        println!("  ✓ 断开完成");
                     }
                 }
             }
