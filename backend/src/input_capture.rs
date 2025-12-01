@@ -20,6 +20,12 @@ pub enum CaptureControl {
     ExitRequested,
 }
 
+
+#[cfg(windows)]
+extern "system" {
+    fn SetCursorPos(x: i32, y: i32) -> i32;
+}
+
 pub struct InputCapture {
     tx: mpsc::UnboundedSender<CaptureControl>,
     should_stop: Arc<AtomicBool>,
@@ -40,48 +46,6 @@ impl InputCapture {
         let ctrl_pressed = Arc::new(AtomicBool::new(false));
         let alt_pressed = Arc::new(AtomicBool::new(false));
         
-        // Track key press times for long-press detection
-        use std::collections::HashMap;
-        use std::sync::Mutex;
-        use std::time::Instant;
-        let key_press_times = Arc::new(Mutex::new(HashMap::<String, Instant>::new()));
-        
-        // Spawn long-press detection task
-        let tx_longpress = tx.clone();
-        let key_press_times_clone = Arc::clone(&key_press_times);
-        let should_stop_longpress = Arc::clone(&should_stop);
-        std::thread::spawn(move || {
-            const LONG_PRESS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
-            const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-            
-            while !should_stop_longpress.load(Ordering::Relaxed) {
-                std::thread::sleep(CHECK_INTERVAL);
-                
-                let mut times = key_press_times_clone.lock().unwrap();
-                let now = Instant::now();
-                
-                // Check for long presses
-                let long_pressed: Vec<String> = times.iter()
-                    .filter(|(_, &press_time)| now.duration_since(press_time) >= LONG_PRESS_THRESHOLD)
-                    .map(|(key, _)| key.clone())
-                    .collect();
-                
-                // Send long-press events and remove from tracking
-                for key in long_pressed {
-                    times.remove(&key);
-                    let _ = tx_longpress.send(CaptureControl::InputEvent(InputEventData {
-                        event_type: "longpress".to_string(),
-                        key: Some(key),
-                        key_code: None,
-                        x: None,
-                        y: None,
-                        dx: None,
-                        dy: None,
-                    }));
-                }
-            }
-        });
-        
         // Spawn blocking thread for rdev grab
         std::thread::spawn(move || {
             let ctrl_pressed_clone = Arc::clone(&ctrl_pressed);
@@ -89,15 +53,23 @@ impl InputCapture {
             let tx_clone = tx.clone();
             let should_stop_clone = Arc::clone(&should_stop);
             
+            // Center position for virtual mouse trap
+            const CENTER_X: i32 = 500;
+            const CENTER_Y: i32 = 500;
+            
             // Track previous mouse position for delta calculation
             use std::sync::Mutex;
             let last_mouse_pos = Arc::new(Mutex::new(Option::<(f64, f64)>::None));
             let last_mouse_pos_clone = Arc::clone(&last_mouse_pos);
             
+            // Initialize cursor to center
+            #[cfg(windows)]
+            unsafe {
+                SetCursorPos(CENTER_X, CENTER_Y);
+            }
+            *last_mouse_pos.lock().unwrap() = Some((CENTER_X as f64, CENTER_Y as f64));
+            
             let callback = move |event: Event| -> Option<Event> {
-                // Debug: print every event
-                // println!("[Capture] 捕获到事件: {:?}", event.event_type);
-                
                 // Check if we should stop
                 if should_stop_clone.load(Ordering::Relaxed) {
                     return Some(event); // Pass through all events
@@ -131,25 +103,25 @@ impl InputCapture {
                 // Convert event to our format and decide whether to block
                 let (input_event, should_block) = match event.event_type {
                     EventType::MouseMove { x, y } => {
-                        // Relative mode: Pass through mouse movement and capture deltas
                         let mut last_pos = last_mouse_pos_clone.lock().unwrap();
                         
-                        // Initialize last position if not set
-                        if last_pos.is_none() {
-                            *last_pos = Some((x, y));
-                            (None, false) // Pass through, no delta yet
-                        } else {
-                            let (prev_x, prev_y) = last_pos.unwrap();
-                            
+                        if let Some((prev_x, prev_y)) = *last_pos {
                             // Calculate delta relative to PREVIOUS position
                             let dx = x - prev_x;
                             let dy = y - prev_y;
                             
-                            // Update last position
-                            *last_pos = Some((x, y));
-                            
-                            // Only send if there's actual movement
+                            // Only process if there's actual movement
                             if dx != 0.0 || dy != 0.0 {
+                                // Reset cursor to center to prevent hitting screen edges
+                                #[cfg(windows)]
+                                unsafe {
+                                    SetCursorPos(CENTER_X, CENTER_Y);
+                                }
+                                
+                                // Update last_pos to CENTER (where we just moved the cursor)
+                                // The next event will be relative to this center
+                                *last_pos = Some((CENTER_X as f64, CENTER_Y as f64));
+                                
                                 (Some(InputEventData {
                                     event_type: "mousemove".to_string(),
                                     key: None,
@@ -158,21 +130,18 @@ impl InputCapture {
                                     y: None,
                                     dx: Some(dx),
                                     dy: Some(dy),
-                                }), false) // DO NOT BLOCK mouse move (allow cursor to move)
+                                }), true) // BLOCK mouse move (keep cursor centered)
                             } else {
-                                (None, false) // Pass through even if no movement
+                                (None, true) // Block even if no movement (keep centered)
                             }
+                        } else {
+                            // First event, initialize to current pos
+                            *last_pos = Some((x, y));
+                            (None, true)
                         }
                     }
                     EventType::KeyPress(key) => {
                         let key_str = format!("{:?}", key);
-                        
-                        // Track key press time for long-press detection
-                        {
-                            let mut times = key_press_times.lock().unwrap();
-                            times.entry(key_str.clone()).or_insert_with(Instant::now);
-                        }
-                        
                         (Some(InputEventData {
                             event_type: "keydown".to_string(),
                             key: Some(key_str),
@@ -185,13 +154,6 @@ impl InputCapture {
                     }
                     EventType::KeyRelease(key) => {
                         let key_str = format!("{:?}", key);
-                        
-                        // Remove from long-press tracking
-                        {
-                            let mut times = key_press_times.lock().unwrap();
-                            times.remove(&key_str);
-                        }
-                        
                         (Some(InputEventData {
                             event_type: "keyup".to_string(),
                             key: Some(key_str),
@@ -210,12 +172,6 @@ impl InputCapture {
                             _ => "button0",
                         };
                         
-                        // Track button press time for long-press detection
-                        {
-                            let mut times = key_press_times.lock().unwrap();
-                            times.entry(button_name.to_string()).or_insert_with(Instant::now);
-                        }
-                        
                         (Some(InputEventData {
                             event_type: "mousedown".to_string(),
                             key: Some(button_name.to_string()),
@@ -233,12 +189,6 @@ impl InputCapture {
                             rdev::Button::Middle => "button2",
                             _ => "button0",
                         };
-                        
-                        // Remove from long-press tracking
-                        {
-                            let mut times = key_press_times.lock().unwrap();
-                            times.remove(button_name);
-                        }
                         
                         (Some(InputEventData {
                             event_type: "mouseup".to_string(),
@@ -264,7 +214,6 @@ impl InputCapture {
                 };
 
                 if let Some(evt) = input_event {
-                    // println!("[Capture] 发送事件到主循环: {:?}", evt.event_type);
                     if let Err(e) = tx_clone.send(CaptureControl::InputEvent(evt)) {
                         eprintln!("[Capture] 发送事件失败: {:?}", e);
                     }
@@ -279,7 +228,7 @@ impl InputCapture {
             };
 
             println!("\n========================================");
-            println!("Starting global input capture (blocking mode)...");
+            println!("Starting global input capture (Virtual Mouse Trap mode)...");
             println!("Press Ctrl+Alt+Q to exit capture mode");
             println!("========================================\n");
             
