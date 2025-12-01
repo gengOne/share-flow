@@ -708,6 +708,7 @@ async fn main() -> Result<()> {
                                         let ws_server_for_input = Arc::clone(&ws_server);
                                         let active_conns_for_cleanup = Arc::clone(&active_connections);
                                         let addr_for_cleanup = addr.clone();
+                                        let simulator = Arc::clone(&simulator);
                                         tokio::spawn(async move {
                                             println!("[被控端] 输入接收循环启动 (批处理直接模式)");
                                             
@@ -735,12 +736,34 @@ async fn main() -> Result<()> {
                                                 // Wait for first message
                                                 let Some(msg) = msg_rx.recv().await else {
                                                     break;
+                                                };
+                                                
+                                                // Process the message
+                                                match msg {
+                                                    Message::MouseMove { x, y } => {
+                                                        // Accumulate this move
+                                                        mouse_accumulator.0 += x;
+                                                        mouse_accumulator.1 += y;
+                                                        
+                                                        // Batch all available mouse moves
+                                                        loop {
+                                                            match msg_rx.try_recv() {
+                                                                Ok(Message::MouseMove { x: dx, y: dy }) => {
+                                                                    mouse_accumulator.0 += dx;
+                                                                    mouse_accumulator.1 += dy;
+                                                                }
+                                                                Ok(other_msg) => {
+                                                                    // Got a non-mouse-move message
+                                                                    // Flush accumulated movement first
+                                                                    if mouse_accumulator != (0, 0) {
+                                                                        simulator.as_ref().mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                                        mouse_accumulator = (0, 0);
                                                                     }
                                                                     
                                                                     // Process the other message immediately
                                                                     match other_msg {
                                                                         Message::MouseClick { button, state } => {
-                                                                            simulator.mouse_click(button, state);
+                                                                            simulator.as_ref().mouse_click(button, state);
                                                                             let event = InputEvent {
                                                                                 event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
                                                                                 x: None, y: None, dx: None, dy: None,
@@ -752,8 +775,11 @@ async fn main() -> Result<()> {
                                                                             };
                                                                             ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                                         }
+                                                                        Message::MouseWheel { delta_x, delta_y } => {
+                                                                            simulator.as_ref().mouse_wheel(delta_x, delta_y);
+                                                                        }
                                                                         Message::KeyPress { key, state } => {
-                                                                            simulator.key_press(key, state);
+                                                                            simulator.as_ref().key_press(key, state);
                                                                             let event = InputEvent {
                                                                                 event_type: if state { "keydown" } else { "keyup" }.to_string(),
                                                                                 x: None, y: None, dx: None, dy: None,
@@ -779,7 +805,7 @@ async fn main() -> Result<()> {
                                                                 Err(_) => {
                                                                     // No more messages, flush accumulated movement
                                                                     if mouse_accumulator != (0, 0) {
-                                                                        simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                                        simulator.as_ref().mouse_move(mouse_accumulator.0, mouse_accumulator.1);
                                                                         mouse_accumulator = (0, 0);
                                                                     }
                                                                     break;
@@ -790,11 +816,11 @@ async fn main() -> Result<()> {
                                                     Message::MouseClick { button, state } => {
                                                         // Flush accumulated movement first
                                                         if mouse_accumulator != (0, 0) {
-                                                            simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                            simulator.as_ref().mouse_move(mouse_accumulator.0, mouse_accumulator.1);
                                                             mouse_accumulator = (0, 0);
                                                         }
                                                         
-                                                        simulator.mouse_click(button, state);
+                                                        simulator.as_ref().mouse_click(button, state);
                                                         let event = InputEvent {
                                                             event_type: if state { "mousedown" } else { "mouseup" }.to_string(),
                                                             x: None, y: None, dx: None, dy: None,
@@ -806,14 +832,22 @@ async fn main() -> Result<()> {
                                                         };
                                                         ws_server_for_input.broadcast(WsMessage::RemoteInput { event });
                                                     }
+                                                    Message::MouseWheel { delta_x, delta_y } => {
+                                                        // Flush accumulated movement first
+                                                        if mouse_accumulator != (0, 0) {
+                                                            simulator.as_ref().mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                            mouse_accumulator = (0, 0);
+                                                        }
+                                                        simulator.as_ref().mouse_wheel(delta_x, delta_y);
+                                                    }
                                                     Message::KeyPress { key, state } => {
                                                         // Flush accumulated movement first
                                                         if mouse_accumulator != (0, 0) {
-                                                            simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
+                                                            simulator.as_ref().mouse_move(mouse_accumulator.0, mouse_accumulator.1);
                                                             mouse_accumulator = (0, 0);
                                                         }
                                                         
-                                                        simulator.key_press(key, state);
+                                                        simulator.as_ref().key_press(key, state);
                                                         let event = InputEvent {
                                                             event_type: if state { "keydown" } else { "keyup" }.to_string(),
                                                             x: None, y: None, dx: None, dy: None,
@@ -949,7 +983,7 @@ async fn main() -> Result<()> {
                                             None
                                         }
                                     }
-                                    "wheel" => None, // TODO: Implement wheel support
+                                    "wheel" => None, // Already handled above
                                     _ => None,
                                 };
 
@@ -959,7 +993,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
-                        };
+                        }
                     }
                     _ => {}
                 }

@@ -1,4 +1,4 @@
-use rdev::{simulate, EventType, Key};
+use rdev::{simulate, EventType, Key, Button};
 
 #[cfg(not(windows))]
 use rdev::Button;
@@ -12,6 +12,79 @@ unsafe impl Sync for InputSimulator {}
 impl InputSimulator {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn mouse_move(&self, dx: i32, dy: i32) {
+        // Use Windows API for mouse movement
+        #[cfg(windows)]
+        {
+            use std::mem;
+            
+            #[repr(C)]
+            struct INPUT {
+                type_: u32,
+                union_: INPUT_UNION,
+            }
+            
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            union INPUT_UNION {
+                mi: MOUSEINPUT,
+            }
+            
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct MOUSEINPUT {
+                dx: i32,
+                dy: i32,
+                mouse_data: u32,
+                dw_flags: u32,
+                time: u32,
+                dw_extra_info: usize,
+            }
+            
+            const INPUT_MOUSE: u32 = 0;
+            const MOUSEEVENTF_MOVE: u32 = 0x0001;
+            
+            extern "system" {
+                fn SendInput(n_inputs: u32, p_inputs: *const INPUT, cb_size: i32) -> u32;
+            }
+            
+            unsafe {
+                // Use SendInput for relative movement (more efficient)
+                let input = INPUT {
+                    type_: INPUT_MOUSE,
+                    union_: INPUT_UNION {
+                        mi: MOUSEINPUT {
+                            dx,
+                            dy,
+                            mouse_data: 0,
+                            dw_flags: MOUSEEVENTF_MOVE,
+                            time: 0,
+                            dw_extra_info: 0,
+                        },
+                    },
+                };
+                
+                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            // Non-Windows systems use rdev (requires absolute coordinate conversion if needed, but relative is tricky with rdev)
+            // For now, we might skip or implement basic relative move if rdev supports it (it doesn't natively support relative move easily without current pos)
+        }
+    }
+
+    pub fn mouse_click(&self, button: u8, state: bool) {
+        let btn = match button {
+            1 => Button::Right,
+            2 => Button::Middle,
+            _ => Button::Left,
+        };
+        let event_type = if state { EventType::ButtonPress(btn) } else { EventType::ButtonRelease(btn) };
+        let _ = simulate(&event_type);
     }
 
     pub fn mouse_wheel(&self, delta_x: i32, delta_y: i32) {
@@ -169,9 +242,9 @@ impl InputSimulator {
             95 => Some(Key::Minus),     // _
             61 => Some(Key::Equal),     // =
             43 => Some(Key::Equal),     // +
-            91 => Some(Key::LeftBracket),   // [
+            // 91 => Some(Key::LeftBracket),   // [ - Conflict with MetaLeft
             93 => Some(Key::RightBracket),  // ]
-            92 => Some(Key::BackSlash),     // \
+            // 92 => Some(Key::BackSlash),     // \ - Conflict with MetaRight
             59 => Some(Key::SemiColon),     // ;
             58 => Some(Key::SemiColon),     // :
             39 => Some(Key::Quote),         // '
