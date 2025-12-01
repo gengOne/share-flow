@@ -131,38 +131,37 @@ impl InputCapture {
                 // Convert event to our format and decide whether to block
                 let (input_event, should_block) = match event.event_type {
                     EventType::MouseMove { x, y } => {
-                        // Hijack mode: Block mouse movement but capture deltas
+                        // Relative mode: Pass through mouse movement and capture deltas
                         let mut last_pos = last_mouse_pos_clone.lock().unwrap();
                         
-                        // Initialize anchor position if not set
+                        // Initialize last position if not set
                         if last_pos.is_none() {
                             *last_pos = Some((x, y));
-                        }
-                        
-                        let (anchor_x, anchor_y) = last_pos.unwrap();
-                        
-                        // Calculate delta relative to the ANCHOR position (since cursor is frozen)
-                        let dx = x - anchor_x;
-                        let dy = y - anchor_y;
-                        
-                        // Note: We do NOT update last_pos because we are blocking the event,
-                        // so the cursor stays at anchor_x, anchor_y.
-                        // The OS calculates the new 'x, y' based on the current cursor position (anchor) + movement.
-                        // So 'x - anchor' is the true delta.
-                        
-                        // Only send if there's actual movement
-                        if dx != 0.0 || dy != 0.0 {
-                            (Some(InputEventData {
-                                event_type: "mousemove".to_string(),
-                                key: None,
-                                key_code: None,
-                                x: None,
-                                y: None,
-                                dx: Some(dx),
-                                dy: Some(dy),
-                            }), true) // BLOCK mouse move (Hijack)
+                            (None, false) // Pass through, no delta yet
                         } else {
-                            (None, true) // BLOCK even if no movement
+                            let (prev_x, prev_y) = last_pos.unwrap();
+                            
+                            // Calculate delta relative to PREVIOUS position
+                            let dx = x - prev_x;
+                            let dy = y - prev_y;
+                            
+                            // Update last position
+                            *last_pos = Some((x, y));
+                            
+                            // Only send if there's actual movement
+                            if dx != 0.0 || dy != 0.0 {
+                                (Some(InputEventData {
+                                    event_type: "mousemove".to_string(),
+                                    key: None,
+                                    key_code: None,
+                                    x: None,
+                                    y: None,
+                                    dx: Some(dx),
+                                    dy: Some(dy),
+                                }), false) // DO NOT BLOCK mouse move (allow cursor to move)
+                            } else {
+                                (None, false) // Pass through even if no movement
+                            }
                         }
                     }
                     EventType::KeyPress(key) => {
