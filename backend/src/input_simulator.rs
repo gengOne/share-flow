@@ -15,11 +15,6 @@ impl InputSimulator {
     }
 
     pub fn mouse_move(&self, dx: i32, dy: i32) {
-        // 只在有实际移动时打印日志
-        if dx != 0 || dy != 0 {
-            println!("[InputSimulator] 鼠标移动: dx={}, dy={}", dx, dy);
-        }
-        
         // 使用 Windows API 进行鼠标移动
         #[cfg(windows)]
         {
@@ -78,13 +73,11 @@ impl InputSimulator {
         #[cfg(not(windows))]
         {
             // 非 Windows 系统使用 rdev（需要实现绝对坐标转换）
-            eprintln!("鼠标移动暂不支持此平台");
+            // eprintln!("鼠标移动暂不支持此平台");
         }
     }
 
     pub fn mouse_click(&self, button: u8, is_down: bool) {
-        println!("[InputSimulator] 鼠标点击: button={}, down={}", button, is_down);
-        
         #[cfg(windows)]
         {
             use std::mem;
@@ -149,12 +142,7 @@ impl InputSimulator {
                     },
                 };
                 
-                let result = SendInput(1, &input, mem::size_of::<INPUT>() as i32);
-                if result == 1 {
-                    println!("  ✓ 鼠标点击成功");
-                } else {
-                    eprintln!("  ✗ 鼠标点击失败");
-                }
+                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
             }
         }
         
@@ -173,11 +161,7 @@ impl InputSimulator {
                 EventType::ButtonRelease(rdev_button)
             };
             
-            if let Err(e) = simulate(&event_type) {
-                eprintln!("模拟鼠标点击失败: {:?}", e);
-            } else {
-                println!("  ✓ 鼠标点击成功");
-            }
+            let _ = simulate(&event_type);
         }
     }
 
@@ -192,18 +176,7 @@ impl InputSimulator {
                 EventType::KeyRelease(rdev_key)
             };
 
-            println!("[InputSimulator] 按键: code={} (char: '{}'), down={}", 
-                     key_code, 
-                     char::from_u32(key_code).unwrap_or('?'), 
-                     is_down);
-            
-            if let Err(e) = simulate(&event_type) {
-                eprintln!("模拟按键失败: {:?}", e);
-            }
-        } else {
-            println!("[InputSimulator] 未知键码: {} (char: '{}')", 
-                     key_code, 
-                     char::from_u32(key_code).unwrap_or('?'));
+            let _ = simulate(&event_type);
         }
     }
 

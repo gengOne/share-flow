@@ -133,10 +133,6 @@ impl WebSocketServer {
     }
 
     pub fn broadcast(&self, msg: WsMessage) {
-        // Debug: print the JSON that will be sent
-        if let Ok(json) = serde_json::to_string(&msg) {
-            println!("[WS] 广播消息: {}", json);
-        }
         let _ = self.broadcast_tx.send(msg);
     }
 

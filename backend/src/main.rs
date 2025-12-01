@@ -711,8 +711,8 @@ async fn main() -> Result<()> {
                                         tokio::spawn(async move {
                                             println!("[被控端] 输入接收循环启动 (批处理直接模式)");
                                             
-                                            // Use a small channel for batching (size 1 to minimize latency)
-                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(1);
+                                            // Use a larger channel for batching to avoid blocking TCP receiver
+                                            let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(100);
                                             
                                             // Spawn TCP receiver
                                             tokio::spawn(async move {
