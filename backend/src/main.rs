@@ -418,7 +418,10 @@ async fn main() -> Result<()> {
                         println!("Frontend requested to stop input capture");
                         let mut capturing = is_capturing.lock().await;
                         if *capturing {
-                            *input_capture_handle.lock().await = None;
+                            let mut handle = input_capture_handle.lock().await;
+                            if let Some(capture) = handle.take() {
+                                capture.stop_capture();
+                            }
                             input_rx = None;
                             *capturing = false;
                             println!("Input capture stopped");
