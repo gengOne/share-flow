@@ -226,18 +226,16 @@ impl InputSimulator {
             32 => Some(Key::Space),
             8 => Some(Key::Backspace),
             9 => Some(Key::Tab),
-            
+
             // 标点符号
             33 => Some(Key::Num1),      // !
             64 => Some(Key::Num2),      // @
             35 => Some(Key::Num3),      // #
             36 => Some(Key::Num4),      // $
-            37 => Some(Key::Num5),      // %
-            94 => Some(Key::Num6),      // ^
-            38 => Some(Key::Num7),      // &
-            42 => Some(Key::Num8),      // *
-            40 => Some(Key::Num9),      // (
-            41 => Some(Key::Num0),      // )
+            // 37 => Some(Key::Num5),      // %
+            // 38 => Some(Key::Num7),      // &
+            // 39 => Some(Key::Quote),         // '
+            // 40 => Some(Key::Num9),      // (
             45 => Some(Key::Minus),     // -
             95 => Some(Key::Minus),     // _
             61 => Some(Key::Equal),     // =
@@ -247,7 +245,7 @@ impl InputSimulator {
             // 92 => Some(Key::BackSlash),     // \ - Conflict with MetaRight
             59 => Some(Key::SemiColon),     // ;
             58 => Some(Key::SemiColon),     // :
-            39 => Some(Key::Quote),         // '
+            // 39 => Some(Key::Quote),         // '
             34 => Some(Key::Quote),         // "
             44 => Some(Key::Comma),         // ,
             60 => Some(Key::Comma),         // <
@@ -270,6 +268,12 @@ impl InputSimulator {
             165 => Some(Key::AltGr),
             91 => Some(Key::MetaLeft),
             92 => Some(Key::MetaRight),
+
+            // Arrow keys
+            38 => Some(Key::UpArrow),
+            40 => Some(Key::DownArrow),
+            37 => Some(Key::LeftArrow),
+            39 => Some(Key::RightArrow),
 
             _ => None,
         }

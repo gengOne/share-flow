@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
 
     // Active TCP connections storage - use channel for lock-free sending
     type MessageSender = mpsc::UnboundedSender<Message>;
-    let active_connections = Arc::new(Mutex::new(HashMap::<String, MessageSender>::new()));
+    let active_connections = Arc::new(Mutex::new(HashMap::<String, (MessageSender, tokio::task::AbortHandle)>::new()));
     
     // Pending connection requests (addr -> (stream, device_info, timestamp))
     type PendingConnection = (TcpStream, Option<DeviceInfo>, std::time::Instant);
@@ -497,15 +497,13 @@ async fn main() -> Result<()> {
                                                 // Create channel for lock-free sending
                                                 let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
                                                 let conn_key = format!("{}:{}", target_ip, 8080);
-                                                active_conns.lock().await.insert(conn_key.clone(), msg_tx);
-                                                println!("  连接已存储: {}", conn_key);
-                                                
+                                                // Split stream for concurrent read/write
+                                                let (mut read_half, mut write_half) = tokio::io::split(stream);
+
+                                                // Notify frontend
                                                 ws_server_clone.broadcast(WsMessage::ConnectionEstablished { 
                                                     device_id: device_id_clone.clone()
                                                 });
-                                                
-                                                // Split stream for concurrent read/write
-                                                let (mut read_half, mut write_half) = tokio::io::split(stream);
                                                 
                                                 // Spawn dedicated sender task
                                                 let active_conns_clone = Arc::clone(&active_conns);
@@ -522,29 +520,38 @@ async fn main() -> Result<()> {
                                                     }
                                                 });
                                                 
-                                                // Keep connection alive and handle any incoming messages
-                                                loop {
-                                                    // Try to receive with timeout
-                                                    match tokio::time::timeout(
-                                                        Duration::from_secs(1),
-                                                        Transport::recv_tcp_split(&mut read_half)
-                                                    ).await {
-                                                        Ok(Ok(msg)) => {
-                                                            println!("收到对方消息: {:?}", msg);
-                                                            // Handle any control messages if needed
-                                                        }
-                                                        Ok(Err(e)) => {
-                                                            println!("连接断开: {}", e);
-                                                            // Remove from active connections
-                                                            active_conns.lock().await.remove(&conn_key);
-                                                            ws_server_clone.broadcast(WsMessage::Disconnected);
-                                                            break;
-                                                        }
-                                                        Err(_) => {
-                                                            // Timeout, continue
+                                                // Spawn dedicated receiver task
+                                                let active_conns_recv = Arc::clone(&active_conns);
+                                                let conn_key_recv = conn_key.clone();
+                                                let ws_server_recv = Arc::clone(&ws_server_clone);
+                                                let recv_task = tokio::spawn(async move {
+                                                    loop {
+                                                        // Try to receive with timeout
+                                                        match tokio::time::timeout(
+                                                            Duration::from_secs(1),
+                                                            Transport::recv_tcp_split(&mut read_half)
+                                                        ).await {
+                                                            Ok(Ok(msg)) => {
+                                                                println!("收到对方消息: {:?}", msg);
+                                                                // Handle any control messages if needed
+                                                            }
+                                                            Ok(Err(e)) => {
+                                                                println!("连接断开: {}", e);
+                                                                // Remove from active connections
+                                                                active_conns_recv.lock().await.remove(&conn_key_recv);
+                                                                ws_server_recv.broadcast(WsMessage::Disconnected);
+                                                                break;
+                                                            }
+                                                            Err(_) => {
+                                                                // Timeout, continue
+                                                            }
                                                         }
                                                     }
-                                                }
+                                                });
+
+                                                // Insert into active connections with abort handle
+                                                active_conns.lock().await.insert(conn_key.clone(), (msg_tx, recv_task.abort_handle()));
+                                                println!("  连接已存储: {}", conn_key);
                                             }
                                             Ok(Ok(Message::ConnectResponse { success: false })) => {
                                                 eprintln!("  ❌ 对方拒绝连接");
@@ -667,7 +674,7 @@ async fn main() -> Result<()> {
                                         
                                         // Create channel for lock-free sending
                                         let (msg_tx_send, mut msg_rx_send) = mpsc::unbounded_channel::<Message>();
-                                        active_connections.lock().await.insert(addr.clone(), msg_tx_send);
+                                        // active_connections.lock().await.insert(addr.clone(), msg_tx_send); // Moved to after spawning tasks
                                         
                                         // Notify frontend
                                         ws_server.broadcast(WsMessage::ConnectionEstablished { 
@@ -709,7 +716,7 @@ async fn main() -> Result<()> {
                                         let active_conns_for_cleanup = Arc::clone(&active_connections);
                                         let addr_for_cleanup = addr.clone();
                                         let simulator = Arc::clone(&simulator);
-                                        tokio::spawn(async move {
+                                        let recv_handle = tokio::spawn(async move {
                                             println!("[被控端] 输入接收循环启动 (批处理直接模式)");
                                             
                                             // Use a larger channel for batching to avoid blocking TCP receiver
@@ -873,6 +880,9 @@ async fn main() -> Result<()> {
                                             println!("[被控端] 输入接收循环结束");
                                             ws_server_for_input.broadcast(WsMessage::Disconnected);
                                         });
+
+                                        // Insert into active connections with abort handle
+                                        active_connections.lock().await.insert(addr.clone(), (msg_tx_send, recv_handle.abort_handle()));
                                     }
                                     Err(e) => {
                                         eprintln!("  ❌ 发送响应失败: {}", e);
@@ -898,6 +908,12 @@ async fn main() -> Result<()> {
                         // Close all active connections
                         let mut connections = active_connections.lock().await;
                         let conn_count = connections.len();
+                        
+                        // Abort all receiving tasks
+                        for (_, (_, abort_handle)) in connections.iter() {
+                            abort_handle.abort();
+                        }
+                        
                         connections.clear();
                         println!("  已关闭 {} 个连接", conn_count);
                         
@@ -925,7 +941,7 @@ async fn main() -> Result<()> {
                                     
                                     if dx_int != 0 || dy_int != 0 {
                                         let msg = Message::MouseMove { x: dx_int, y: dy_int };
-                                        for sender in connections.values() {
+                                        for (sender, _) in connections.values() {
                                             let _ = sender.send(msg.clone());
                                         }
                                     }
@@ -938,7 +954,7 @@ async fn main() -> Result<()> {
                                     
                                     if dx_int != 0 || dy_int != 0 {
                                         let msg = Message::MouseWheel { delta_x: dx_int, delta_y: dy_int };
-                                        for sender in connections.values() {
+                                        for (sender, _) in connections.values() {
                                             let _ = sender.send(msg.clone());
                                         }
                                     }
@@ -988,7 +1004,7 @@ async fn main() -> Result<()> {
                                 };
 
                                 if let Some(msg) = msg {
-                                    for sender in connections.values() {
+                                    for (sender, _) in connections.values() {
                                         let _ = sender.send(msg.clone());
                                     }
                                 }
@@ -1039,7 +1055,7 @@ async fn main() -> Result<()> {
                                         
                                     if dx_int != 0 || dy_int != 0 {
                                             let msg = Message::MouseMove { x: dx_int, y: dy_int };
-                                            for sender in connections.values() {
+                                            for (sender, _) in connections.values() {
                                                 let _ = sender.send(msg.clone());
                                             }
                                         }
@@ -1052,7 +1068,7 @@ async fn main() -> Result<()> {
                                         
                                         if dx_int != 0 || dy_int != 0 {
                                             let msg = Message::MouseWheel { delta_x: dx_int, delta_y: dy_int };
-                                            for sender in connections.values() {
+                                            for (sender, _) in connections.values() {
                                                 let _ = sender.send(msg.clone());
                                             }
                                         }
@@ -1070,7 +1086,7 @@ async fn main() -> Result<()> {
                                         println!("[主控端] 捕获到鼠标点击: button={}, state={}", button, state);
                                         let msg = Message::MouseClick { button, state };
                                         
-                                        for sender in connections.values() {
+                                        for (sender, _) in connections.values() {
                                             if sender.send(msg.clone()).is_ok() {
                                                 println!("  ✓ 已发送到被控端");
                                             }
@@ -1093,7 +1109,7 @@ async fn main() -> Result<()> {
                                         if code != 0 {
                                             let msg = Message::KeyPress { key: code, state };
                                             
-                                            for sender in connections.values() {
+                                            for (sender, _) in connections.values() {
                                                 let _ = sender.send(msg.clone());
                                             }
                                         }
@@ -1123,7 +1139,7 @@ async fn main() -> Result<()> {
                                             println!("[主控端] 捕获到按键(Fallback): key_str={}, key_code={}, state={}", key_str, key_code, state);
                                             let msg = Message::KeyPress { key: key_code, state };
                                             
-                                            for sender in connections.values() {
+                                            for (sender, _) in connections.values() {
                                                 let _ = sender.send(msg.clone());
                                             }
                                         }
@@ -1152,10 +1168,11 @@ async fn main() -> Result<()> {
                         let conn_count = connections.len();
                         println!("  准备关闭 {} 个连接...", conn_count);
                         
-                        // Send disconnect message to all peers
-                        for (addr, sender) in connections.iter() {
+                        // Send disconnect message to all peers and abort receiving tasks
+                        for (addr, (sender, abort_handle)) in connections.iter() {
                             println!("  发送断开消息到: {}", addr);
                             let _ = sender.send(Message::Disconnect);
+                            abort_handle.abort();
                         }
                         drop(connections);
                         

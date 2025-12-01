@@ -301,6 +301,11 @@ fn rdev_key_to_code(key: Key) -> u32 {
         Key::MetaLeft => 91,
         Key::MetaRight => 92,
 
+        Key::UpArrow => 38,
+        Key::DownArrow => 40,
+        Key::LeftArrow => 37,
+        Key::RightArrow => 39,
+
         _ => 0,
     }
 }
