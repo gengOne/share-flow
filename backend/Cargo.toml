@@ -15,6 +15,16 @@ tokio-tungstenite = "0.21"
 futures-util = "0.3"
 hostname = "0.4"
 rdev = { version = "0.5", features = ["unstable_grab"] }
+axum = { version = "0.7", features = ["ws"] }
+rust-embed = "8.0"
+mime_guess = "2.0"
+tray-icon = "0.14"
+winit = "0.29"
+webbrowser = "0.8"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+tao = "0.28" # tray-icon usually works best with tao or winit, using winit as planned but tao is often preferred for tray-only apps. Let's stick to winit as per plan or switch to tao if needed. Actually tray-icon docs suggest tao. Let's use winit first as it's more standard.
+# Wait, tray-icon + winit is a common combo.
 
-[build-dependencies]
+
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

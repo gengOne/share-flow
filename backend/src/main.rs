@@ -4,6 +4,7 @@ mod transport;
 mod websocket;
 mod input_capture;
 mod input_simulator;
+mod web_server;
 
 use anyhow::Result;
 use discovery::Discovery;
@@ -18,6 +19,12 @@ use transport::Transport;
 use websocket::{DeviceInfo, InputEvent, WebSocketServer, WsMessage};
 use input_capture::{CaptureControl, InputCapture};
 use input_simulator::InputSimulator;
+use tray_icon::{
+    menu::{Menu, MenuItem, MenuEvent},
+    TrayIconBuilder,
+};
+use winit::event_loop::{ControlFlow, EventLoopBuilder};
+use winit::event::Event;
 
 fn get_local_ip() -> String {
     // Try to get all network interfaces
@@ -74,8 +81,7 @@ fn get_local_ip() -> String {
         .to_string()
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn run_backend() -> Result<()> {
     let udp_port = 8080;
     let ws_port = 4000;
     
@@ -104,6 +110,24 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         if let Err(e) = ws_server_clone.start().await {
             eprintln!("WebSocket server error: {}", e);
+        }
+    });
+
+    // Start Web Server
+    let web_port = 3000;
+    println!("  Web Server: http://127.0.0.1:{}", web_port);
+    
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", web_port)).await.unwrap();
+        axum::serve(listener, web_server::app()).await.unwrap();
+    });
+
+    // Open Browser
+    // Give the server a moment to start
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        if let Err(e) = webbrowser::open(&format!("http://127.0.0.1:{}", web_port)) {
+            eprintln!("Failed to open browser: {}", e);
         }
     });
 
@@ -1197,4 +1221,52 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn main() -> Result<()> {
+    let event_loop = EventLoopBuilder::new().build().unwrap();
+
+    let tray_menu = Menu::new();
+    let quit_i = MenuItem::new("Quit", true, None);
+    tray_menu.append(&quit_i).unwrap();
+
+    let mut _tray_icon = Some(
+        TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("ShareFlow")
+            .with_icon(tray_icon::Icon::from_rgba(vec![255u8; 4 * 32 * 32], 32, 32).unwrap())
+            .build()
+            .unwrap(),
+    );
+
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        
+        rt.block_on(async {
+            if let Err(e) = run_backend().await {
+                eprintln!("Backend error: {}", e);
+            }
+        });
+    });
+
+    let menu_channel = MenuEvent::receiver();
+
+    event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Wait);
+
+        if let Ok(event) = menu_channel.try_recv() {
+            if event.id == quit_i.id() {
+                elwt.exit();
+            }
+        }
+
+        match event {
+            _ => {}
+        }
+    }).unwrap();
+
+    Ok(())
 }

@@ -10,9 +10,9 @@
     "electron:dev": "concurrently \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
     "electron:build": "npm run rust:build-release && vite build && electron-builder",
     "electron:pack": "npm run rust:build-release && vite build && electron-builder --dir",
-    "rust:build": "cd rust-service && cargo build",
-    "rust:run": "cd rust-service && cargo run",
-    "rust:build-release": "cd rust-service && cargo build --release",
+    "rust:build": "cd ../backend && cargo build",
+    "rust:run": "cd ../backend && cargo run",
+    "rust:build-release": "cd ../backend && cargo build --release",
     "test:connection": "start test-connection.html"
   },
   "main": "electron/main.cjs",
@@ -25,7 +25,7 @@
     ],
     "extraResources": [
       {
-        "from": "rust-service/target/release/rust-service.exe",
+        "from": "../backend/target/release/rust-service.exe",
         "to": "rust-service.exe",
         "filter": [
           "**/*"
@@ -47,7 +47,8 @@
           ]
         }
       ],
-      "icon": "icon.ico"
+      "icon": "icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
       "oneClick": false,

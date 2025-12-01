@@ -32,13 +32,13 @@ function startRustService() {
     const isDev = !app.isPackaged;
     // Adjust path based on dev (relative to project root) or prod (bundled)
     const binaryPath = isDev
-        ? path.join(__dirname, '../rust-service/target/debug/rust-service.exe')
+        ? path.join(__dirname, '../../backend/target/debug/rust-service.exe')
         : path.join(process.resourcesPath, 'rust-service.exe');
 
     console.log(`Starting Rust service from: ${binaryPath}`);
 
     rustProcess = spawn(binaryPath, [], {
-        cwd: isDev ? path.join(__dirname, '../rust-service') : path.dirname(binaryPath),
+        cwd: isDev ? path.join(__dirname, '../../backend') : path.dirname(binaryPath),
     });
 
     rustProcess.stdout.on('data', (data) => {
