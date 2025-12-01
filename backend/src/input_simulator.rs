@@ -14,8 +14,7 @@ impl InputSimulator {
         Self
     }
 
-    pub fn mouse_move(&self, dx: i32, dy: i32) {
-        // 使用 Windows API 进行鼠标移动
+    pub fn mouse_wheel(&self, delta_x: i32, delta_y: i32) {
         #[cfg(windows)]
         {
             use std::mem;
@@ -44,123 +43,59 @@ impl InputSimulator {
             }
             
             const INPUT_MOUSE: u32 = 0;
-            const MOUSEEVENTF_MOVE: u32 = 0x0001;
+            const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+            const MOUSEEVENTF_HWHEEL: u32 = 0x1000;
             
             extern "system" {
                 fn SendInput(n_inputs: u32, p_inputs: *const INPUT, cb_size: i32) -> u32;
             }
             
             unsafe {
-                // 使用 SendInput 进行相对移动（更高效）
-                let input = INPUT {
-                    type_: INPUT_MOUSE,
-                    union_: INPUT_UNION {
-                        mi: MOUSEINPUT {
-                            dx,
-                            dy,
-                            mouse_data: 0,
-                            dw_flags: MOUSEEVENTF_MOVE,
-                            time: 0,
-                            dw_extra_info: 0,
+                // Vertical scroll
+                if delta_y != 0 {
+                    let input = INPUT {
+                        type_: INPUT_MOUSE,
+                        union_: INPUT_UNION {
+                            mi: MOUSEINPUT {
+                                dx: 0,
+                                dy: 0,
+                                mouse_data: (delta_y * 120) as u32, // Windows expects multiples of 120
+                                dw_flags: MOUSEEVENTF_WHEEL,
+                                time: 0,
+                                dw_extra_info: 0,
+                            },
                         },
-                    },
-                };
+                    };
+                    SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+                }
                 
-                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+                // Horizontal scroll
+                if delta_x != 0 {
+                    let input = INPUT {
+                        type_: INPUT_MOUSE,
+                        union_: INPUT_UNION {
+                            mi: MOUSEINPUT {
+                                dx: 0,
+                                dy: 0,
+                                mouse_data: (delta_x * 120) as u32,
+                                dw_flags: MOUSEEVENTF_HWHEEL,
+                                time: 0,
+                                dw_extra_info: 0,
+                            },
+                        },
+                    };
+                    SendInput(1, &input, mem::size_of::<INPUT>() as i32);
+                }
             }
         }
         
         #[cfg(not(windows))]
         {
-            // 非 Windows 系统使用 rdev（需要实现绝对坐标转换）
-            // eprintln!("鼠标移动暂不支持此平台");
-        }
-    }
-
-    pub fn mouse_click(&self, button: u8, is_down: bool) {
-        #[cfg(windows)]
-        {
-            use std::mem;
-            
-            #[repr(C)]
-            struct INPUT {
-                type_: u32,
-                union_: INPUT_UNION,
-            }
-            
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            union INPUT_UNION {
-                mi: MOUSEINPUT,
-            }
-            
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct MOUSEINPUT {
-                dx: i32,
-                dy: i32,
-                mouse_data: u32,
-                dw_flags: u32,
-                time: u32,
-                dw_extra_info: usize,
-            }
-            
-            const INPUT_MOUSE: u32 = 0;
-            const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
-            const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
-            const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
-            const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
-            const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
-            const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
-            
-            extern "system" {
-                fn SendInput(n_inputs: u32, p_inputs: *const INPUT, cb_size: i32) -> u32;
-            }
-            
-            let dw_flags = match (button, is_down) {
-                (0, true) => MOUSEEVENTF_LEFTDOWN,
-                (0, false) => MOUSEEVENTF_LEFTUP,
-                (1, true) => MOUSEEVENTF_RIGHTDOWN,
-                (1, false) => MOUSEEVENTF_RIGHTUP,
-                (2, true) => MOUSEEVENTF_MIDDLEDOWN,
-                (2, false) => MOUSEEVENTF_MIDDLEUP,
-                _ => MOUSEEVENTF_LEFTDOWN,
+            // rdev simulation for wheel
+            let event_type = EventType::Wheel { 
+                delta_x: delta_x as i64, 
+                delta_y: delta_y as i64 
             };
-            
-            unsafe {
-                let input = INPUT {
-                    type_: INPUT_MOUSE,
-                    union_: INPUT_UNION {
-                        mi: MOUSEINPUT {
-                            dx: 0,
-                            dy: 0,
-                            mouse_data: 0,
-                            dw_flags,
-                            time: 0,
-                            dw_extra_info: 0,
-                        },
-                    },
-                };
-                
-                SendInput(1, &input, mem::size_of::<INPUT>() as i32);
-            }
-        }
-        
-        #[cfg(not(windows))]
-        {
-            let rdev_button = match button {
-                0 => Button::Left,
-                1 => Button::Right,
-                2 => Button::Middle,
-                _ => Button::Left,
-            };
-
-            let event_type = if is_down {
-                EventType::ButtonPress(rdev_button)
-            } else {
-                EventType::ButtonRelease(rdev_button)
-            };
-            
             let _ = simulate(&event_type);
         }
     }
@@ -250,6 +185,19 @@ impl InputSimulator {
             96 => Some(Key::BackQuote),     // `
             126 => Some(Key::BackQuote),    // ~
             
+            // Modifiers
+            16 => Some(Key::ShiftLeft),
+            160 => Some(Key::ShiftLeft),
+            161 => Some(Key::ShiftRight),
+            17 => Some(Key::ControlLeft),
+            162 => Some(Key::ControlLeft),
+            163 => Some(Key::ControlRight),
+            18 => Some(Key::Alt),
+            164 => Some(Key::Alt),
+            165 => Some(Key::AltGr),
+            91 => Some(Key::MetaLeft),
+            92 => Some(Key::MetaRight),
+
             _ => None,
         }
     }

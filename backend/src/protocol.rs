@@ -13,6 +13,11 @@ pub enum Message {
         x: i32,
         y: i32,
     },
+    /// Mouse wheel scroll
+    MouseWheel {
+        delta_x: i32,
+        delta_y: i32,
+    },
     /// Mouse button state change
     MouseClick {
         button: u8, // 0: Left, 1: Right, 2: Middle, etc.

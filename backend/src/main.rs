@@ -735,28 +735,6 @@ async fn main() -> Result<()> {
                                                 // Wait for first message
                                                 let Some(msg) = msg_rx.recv().await else {
                                                     break;
-                                                };
-                                                
-                                                // Process the message
-                                                match msg {
-                                                    Message::MouseMove { x, y } => {
-                                                        // Accumulate this move
-                                                        mouse_accumulator.0 += x;
-                                                        mouse_accumulator.1 += y;
-                                                        
-                                                        // Batch all available mouse moves
-                                                        loop {
-                                                            match msg_rx.try_recv() {
-                                                                Ok(Message::MouseMove { x: dx, y: dy }) => {
-                                                                    mouse_accumulator.0 += dx;
-                                                                    mouse_accumulator.1 += dy;
-                                                                }
-                                                                Ok(other_msg) => {
-                                                                    // Got a non-mouse-move message
-                                                                    // Flush accumulated movement first
-                                                                    if mouse_accumulator != (0, 0) {
-                                                                        simulator.mouse_move(mouse_accumulator.0, mouse_accumulator.1);
-                                                                        mouse_accumulator = (0, 0);
                                                                     }
                                                                     
                                                                     // Process the other message immediately
@@ -919,6 +897,19 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+                            "wheel" => {
+                                if let (Some(dx), Some(dy)) = (event.dx, event.dy) {
+                                    let dx_int = dx as i32;
+                                    let dy_int = dy as i32;
+                                    
+                                    if dx_int != 0 || dy_int != 0 {
+                                        let msg = Message::MouseWheel { delta_x: dx_int, delta_y: dy_int };
+                                        for sender in connections.values() {
+                                            let _ = sender.send(msg.clone());
+                                        }
+                                    }
+                                }
+                            }
                             _ => {
                                 // For other events (clicks, keys), send immediately
                                 let msg = match event.event_type.as_str() {
@@ -1012,8 +1003,21 @@ async fn main() -> Result<()> {
                                         let dx_int = dx as i32;
                                         let dy_int = dy as i32;
                                         
-                                        if dx_int != 0 || dy_int != 0 {
+                                    if dx_int != 0 || dy_int != 0 {
                                             let msg = Message::MouseMove { x: dx_int, y: dy_int };
+                                            for sender in connections.values() {
+                                                let _ = sender.send(msg.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                "wheel" => {
+                                    if let (Some(dx), Some(dy)) = (input_event.dx, input_event.dy) {
+                                        let dx_int = dx as i32;
+                                        let dy_int = dy as i32;
+                                        
+                                        if dx_int != 0 || dy_int != 0 {
+                                            let msg = Message::MouseWheel { delta_x: dx_int, delta_y: dy_int };
                                             for sender in connections.values() {
                                                 let _ = sender.send(msg.clone());
                                             }

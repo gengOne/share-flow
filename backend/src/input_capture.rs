@@ -291,6 +291,16 @@ fn rdev_key_to_code(key: Key) -> u32 {
         // For now, we map them to 0 or specific codes if the simulator supports them
         // Adding F1-F12 support would require updating simulator as well
         
+        // Modifiers
+        Key::ShiftLeft => 160,
+        Key::ShiftRight => 161,
+        Key::ControlLeft => 162,
+        Key::ControlRight => 163,
+        Key::Alt => 164,
+        Key::AltGr => 165,
+        Key::MetaLeft => 91,
+        Key::MetaRight => 92,
+
         _ => 0,
     }
 }
